@@ -14,16 +14,18 @@ for (const dir of ['card', 'webroot']) await cp(path.join(root, 'src', dir), pat
 // Only the algorithms used by Skland request signing; no browser crypto dependency.
 const crypto = (await Promise.all(['core.js', 'sha256.js', 'md5.js', 'hmac.js'].map(name =>
   readFile(path.join(root, 'node_modules/crypto-js', name), 'utf8')))).join('\n;\n');
-const shared = await Promise.all(['core.js', 'api.js', 'service.js'].map(name => readFile(path.join(root, 'src/shared', name), 'utf8')));
+const sharedNames = ['core.js', 'api.js', 'media.js', 'service.js'];
+const shared = await Promise.all(sharedNames.map(name => readFile(path.join(root, 'src/shared', name), 'utf8')));
 for (const dir of ['card', 'webroot']) {
   await writeFile(path.join(stage, dir, 'crypto.js'), crypto);
-  for (let i = 0; i < shared.length; i++) await writeFile(path.join(stage, dir, ['core.js', 'api.js', 'service.js'][i]), shared[i]);
+  for (let i = 0; i < shared.length; i++) await writeFile(path.join(stage, dir, sharedNames[i]), shared[i]);
 }
 await mkdir(path.join(stage, 'webroot/preview'), { recursive: true });
 await writeFile(path.join(stage, 'webroot/preview/core.js'), shared[0]);
 await cp(path.join(root, 'src/card/main.js'), path.join(stage, 'webroot/preview/renderer.js'));
 await mkdir(path.join(stage, 'background'), { recursive: true });
-await writeFile(path.join(stage, 'background/main.js'), [crypto, ...shared,
+const imageEncoder = await readFile(path.join(root, 'src/webroot/image.js'), 'utf8');
+await writeFile(path.join(stage, 'background/main.js'), [crypto, imageEncoder, ...shared,
   'async function refresh() { await EndfieldService.create(bridge).refresh(); }'].join('\n;\n'));
 await cp(path.join(root, 'node_modules/crypto-js/LICENSE'), path.join(stage, 'webroot/crypto-js-LICENSE.txt'));
 await mkdir(path.join(root, 'dist'), { recursive: true });

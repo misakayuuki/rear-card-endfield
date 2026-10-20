@@ -28,4 +28,8 @@ const background={console};background.window=background;vm.createContext(backgro
 vm.runInContext(text('background/main.js'),background);
 assert.equal(typeof background.refresh,'function');
 assert.equal(typeof background.EndfieldService.create,'function');
+assert.equal(typeof background.EndfieldImages.prepare,'function');
+assert.equal(typeof background.EndfieldMedia.hydrate,'function');
+assert.match(text('webroot/index.html'),/<script src="image.js"><\/script>/);
+assert.match(text('card/index.html'),/<script src="media.js"><\/script>/);
 console.log('ZIP layout, all scripts, compiled card signing, and standalone background entry verified.');

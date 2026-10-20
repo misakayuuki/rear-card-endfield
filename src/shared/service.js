@@ -2,12 +2,93 @@
   'use strict';
   var Core = root.EndfieldCore;
   var KEYS = { auth: 'endfield.auth', roles: 'endfield.roles', characters: 'endfield.characters', snapshot: 'endfield.snapshot', portrait: 'endfield.portrait' };
+  var CHUNK_CHARS = 150000;
+  var SNAPSHOT_CHARS = 760000;
+  var PORTRAIT_CHARS = 480000;
   function create(bridge) {
     var api = root.EndfieldAPI.create(bridge);
     var running = null;
     var generation = 0;
     var sessionCounter = 0;
+    var chunkCounter = 0;
     function cancelled() { var error = new Error('账号已变更，请重新操作。'); error.code = 'CANCELLED'; return error; }
+    function chunkManifest(value) {
+      return !!value && value.endfieldChunked === 1 && typeof value.revision === 'string' &&
+        /^[a-z0-9-]{1,100}$/.test(value.revision) && Number.isInteger(value.parts) && value.parts > 0 && value.parts <= 16 &&
+        Number.isInteger(value.length) && value.length > 0 && value.length <= SNAPSHOT_CHARS;
+    }
+    function chunkKey(key, value, index) { return key + '.chunk.' + value.revision + '.' + index; }
+    async function removeChunks(key, value) {
+      if (!chunkManifest(value)) return;
+      for (var i = 0; i < value.parts; i++) {
+        try { await bridge.storage.remove(chunkKey(key, value, i)); } catch (_) { /* Cleanup is best effort; the committed pointer stays valid. */ }
+      }
+    }
+    async function readStored(key) {
+      // Each awaited read occupies its own bridge batch. Never return a 700K snapshot via one HostVar.
+      for (var attempt = 0; attempt < 3; attempt++) {
+        var pointer = await bridge.storage.get(key);
+        if (!pointer || pointer.endfieldChunked !== 1) return pointer;
+        if (!chunkManifest(pointer)) throw new Error('图片缓存格式异常，请重新保存。');
+        var parts = [], length = 0, complete = true;
+        for (var index = 0; index < pointer.parts; index++) {
+          var part = await bridge.storage.get(chunkKey(key, pointer, index));
+          if (typeof part !== 'string' || part.length > CHUNK_CHARS) { complete = false; break; }
+          length += part.length;
+          if (length > pointer.length) { complete = false; break; }
+          parts.push(part);
+        }
+        if (complete && length === pointer.length) {
+          try { return JSON.parse(parts.join('')); } catch (_) { throw new Error('图片缓存无法读取，请重新保存。'); }
+        }
+        // A newer write may remove an old generation while this reader is between chunks.
+        // Retry the committed pointer rather than combining generations or returning partial data.
+        var latest = await bridge.storage.get(key);
+        if (chunkManifest(latest) && latest.revision === pointer.revision) throw new Error('图片缓存不完整，请重新保存。');
+      }
+      throw new Error('图片缓存正在更新，请稍后重试。');
+    }
+    async function writeStored(key, value, isValid, limit) {
+      var serialized = JSON.stringify(value === undefined ? null : value);
+      if (serialized.length > (limit || SNAPSHOT_CHARS)) throw new Error('背屏图片与资料超过快照容量，请缩小图片后再保存。');
+      var old = await bridge.storage.get(key);
+      var pointer = null;
+      try {
+        if (serialized.length <= CHUNK_CHARS) {
+          if (isValid && !await isValid()) return false;
+          await bridge.storage.set(key, value);
+        } else {
+          pointer = { endfieldChunked: 1,
+            revision: Date.now().toString(36) + '-' + (++chunkCounter) + '-' + Math.random().toString(36).slice(2),
+            parts: 0, length: serialized.length };
+          for (var offset = 0; offset < serialized.length;) {
+            var size = Math.min(CHUNK_CHARS, serialized.length - offset);
+            var part = serialized.slice(offset, offset + size);
+            // A string's JSON transport also escapes quotes/backslashes; budget the wire value.
+            while (JSON.stringify(part).length > CHUNK_CHARS) {
+              size = Math.max(1, Math.floor(size * 0.8));
+              part = serialized.slice(offset, offset + size);
+            }
+            await bridge.storage.set(chunkKey(key, pointer, pointer.parts), part);
+            pointer.parts++;
+            offset += size;
+          }
+          if (isValid && !await isValid()) { await removeChunks(key, pointer); return false; }
+          // The small pointer is the commit: a failed chunk write leaves the previous image readable.
+          await bridge.storage.set(key, pointer);
+        }
+      } catch (error) {
+        await removeChunks(key, pointer);
+        throw error;
+      }
+      await removeChunks(key, old);
+      return !isValid || await isValid();
+    }
+    async function removeStored(key) {
+      var old = await bridge.storage.get(key);
+      await bridge.storage.remove(key);
+      await removeChunks(key, old);
+    }
     async function sessionId() { return String(await bridge.config.get('sessionRevision') || ''); }
     async function context() {
       var localGeneration = generation;
@@ -29,17 +110,18 @@
     async function getSettings() { return Core.sanitizeSettings(await bridge.config.get('settings')); }
     async function getSnapshot() {
       var currentSession = await sessionId();
-      var value = await bridge.storage.get(KEYS.snapshot);
-      return Core.validSnapshot(value) && String(value.sessionRevision || '') === currentSession ? value : null;
+      var value = await readStored(KEYS.snapshot);
+      return Core.validSnapshot(value) && String(value.sessionRevision || '') === currentSession && currentSession === await sessionId() ? value : null;
     }
     async function repairLatePublication() {
       var expected = await context();
       var value = await getSnapshot();
       if (!value) {
         value = { schemaVersion: 1, sessionRevision: expected.session, settings: await getSettings(),
-          stamina: null, profile: null, dashboard: null, portrait: await bridge.storage.get(KEYS.portrait), syncedAt: 0, error: null };
+          stamina: null, profile: null, dashboard: null, portrait: await readStored(KEYS.portrait), syncedAt: 0, error: null };
       }
       if (await isCurrent(expected)) {
+        if (!await writeStored(KEYS.snapshot, value, function () { return isCurrent(expected); })) return getSnapshot();
         await bridge.card.saveSnapshot(value);
         await bridge.card.requestRefresh();
       }
@@ -49,7 +131,7 @@
       expected = expected || await context();
       // Never batch large image reads: HostVar sync results have a practical ~200K limit.
       var settings = await getSettings();
-      var portrait = await bridge.storage.get(KEYS.portrait);
+      var portrait = await readStored(KEYS.portrait);
       if (preserveNewer) {
         var latest = await getSnapshot();
         if (latest && latest.stamina && (!stamina || latest.stamina.updatedAt > stamina.updatedAt)) {
@@ -63,8 +145,8 @@
       var snapshot = { schemaVersion: 1, sessionRevision: expected.session, settings: settings, stamina: stamina || null,
         profile: profile || null, dashboard: dashboard || null, portrait: portrait || null,
         syncedAt: stamina ? stamina.updatedAt : 0, error: error || null };
-      await bridge.storage.set(KEYS.snapshot, snapshot);
-      if (!await isCurrent(expected)) return getSnapshot();
+      if (!await writeStored(KEYS.snapshot, snapshot, function () { return isCurrent(expected); })) return repairLatePublication();
+      if (!await isCurrent(expected)) return repairLatePublication();
       await bridge.card.saveSnapshot(snapshot);
       if (!await isCurrent(expected)) return repairLatePublication();
       // Snapshot writes refresh the carrier cache, but do not notify its drawing code.
@@ -81,11 +163,11 @@
       return republish();
     }
     async function setPortrait(dataUrl) {
-      if (dataUrl && (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl) || dataUrl.length > 160000)) {
-        throw new Error('立绘需为 PNG、JPEG 或 WebP，压缩后不超过 160K 字符。');
+      if (dataUrl && (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(dataUrl) || dataUrl.length > PORTRAIT_CHARS)) {
+        throw new Error('立绘需为 PNG、JPEG 或 WebP，压缩后不超过 480K 字符。');
       }
-      if (dataUrl) await bridge.storage.set(KEYS.portrait, { dataUrl: dataUrl });
-      else await bridge.storage.remove(KEYS.portrait);
+      if (dataUrl) await writeStored(KEYS.portrait, { dataUrl: dataUrl }, null, PORTRAIT_CHARS + 64);
+      else await removeStored(KEYS.portrait);
       return republish();
     }
     async function connect(accountToken) {
@@ -154,6 +236,12 @@
         var result = await api.fetchStamina(auth, role);
         if (!Core.validStamina(result.stamina)) throw new Error('森空岛未返回有效体力数据，请稍后刷新。');
         if (!await isCurrent(expected)) return getSnapshot();
+        if (root.EndfieldMedia && typeof root.EndfieldMedia.hydrate === 'function') {
+          var previous = await getSnapshot();
+          try { result.dashboard = await root.EndfieldMedia.hydrate(result.dashboard, previous && previous.dashboard, bridge); }
+          catch (_) { /* Optional media must never discard a successful stamina response. */ }
+          if (!await isCurrent(expected)) return getSnapshot();
+        }
         if (Array.isArray(result.characters)) await bridge.storage.set(KEYS.characters, result.characters);
         // Do not persist rotated session tokens here: another view may have disconnected meanwhile.
         return await publish(result.stamina, result.profile, null, expected, true, result.dashboard);

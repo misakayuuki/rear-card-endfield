@@ -26,7 +26,7 @@
     var message = event.data;
     if (!message || message.type !== 'endfield:preview' || !window.EndfieldCore.validSnapshot(message.snapshot)) return;
     var image = message.snapshot.portrait && message.snapshot.portrait.dataUrl;
-    if (image && (typeof image !== 'string' || image.length > 160000 || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image))) return;
+    if (image && (typeof image !== 'string' || image.length > 480000 || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image))) return;
     state = message.snapshot;
     refreshCallbacks.forEach(function (callback) { callback(); });
   });

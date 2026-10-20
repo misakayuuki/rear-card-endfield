@@ -219,31 +219,6 @@
   document.querySelectorAll('[data-color]').forEach(function (button) { button.addEventListener('click', function () { $('accent-color').value = button.getAttribute('data-color'); markDirty(); }); });
   $('remove-image').addEventListener('click', function () { imageJob += 1; imageProcessing = false; $('save-button').disabled = busy; pendingPortrait = ''; $('portrait-file').value = ''; $('image-status').textContent = '保存后移除当前立绘'; markDirty(); });
 
-  async function prepareImage(file) {
-    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error('请选择 PNG、JPG 或 WebP 图片。');
-    if (file.size > 20 * 1024 * 1024) throw new Error('图片超过 20 MB，请先缩小后选择。');
-    var url = URL.createObjectURL(file);
-    var image = new Image();
-    try {
-      await new Promise(function (resolve, reject) { image.onload = resolve; image.onerror = function () { reject(new Error('图片无法读取，请换一张图片。')); }; image.src = url; });
-      if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth * image.naturalHeight > 80000000) throw new Error('图片尺寸过大，请先缩小后选择。');
-      var canvas = document.createElement('canvas');
-      var ratio = Math.min(1, 640 / Math.max(image.naturalWidth, image.naturalHeight));
-      var keepAlpha = file.type !== 'image/jpeg';
-      for (var attempt = 0; attempt < 15; attempt += 1) {
-        canvas.width = Math.max(1, Math.round(image.naturalWidth * ratio));
-        canvas.height = Math.max(1, Math.round(image.naturalHeight * ratio));
-        var ctx = canvas.getContext('2d');
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-        var dataUrl = canvas.toDataURL(keepAlpha ? 'image/png' : 'image/jpeg', 0.84);
-        if (dataUrl.length <= 160000) return { dataUrl: dataUrl, width: canvas.width, height: canvas.height, bytes: Math.floor(dataUrl.length * 0.75) };
-        ratio *= 0.83;
-      }
-      throw new Error('图片无法压缩到适合背屏的大小，请换一张图片。');
-    } finally { URL.revokeObjectURL(url); }
-  }
   $('portrait-file').addEventListener('change', async function () {
     var file = $('portrait-file').files && $('portrait-file').files[0];
     if (!file) return;
@@ -252,7 +227,7 @@
     $('image-status').textContent = '正在为背屏处理图片…';
     $('save-button').disabled = true;
     try {
-      var prepared = await prepareImage(file);
+      var prepared = await window.EndfieldImages.prepare(file);
       if (job !== imageJob) return;
       pendingPortrait = prepared.dataUrl;
       $('image-status').textContent = prepared.width + ' × ' + prepared.height + ' · ' + Math.round(prepared.bytes / 1024) + ' KB · 等待保存';
@@ -275,10 +250,10 @@
       var binary = atob(match[2]);
       var bytes = new Uint8Array(binary.length);
       for (var index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-      var prepared = await prepareImage(new Blob([bytes], { type: match[1] }));
+      var prepared = await window.EndfieldImages.prepare(new Blob([bytes], { type: match[1] }));
       pendingPortrait = prepared.dataUrl;
       $('character-name').value = character.name.slice(0, 24);
-      $('image-status').textContent = character.name + ' · ' + Math.round(prepared.bytes / 1024) + ' KB · 等待保存';
+      $('image-status').textContent = character.name + ' · ' + prepared.width + ' × ' + prepared.height + ' · ' + Math.round(prepared.bytes / 1024) + ' KB · 等待保存';
       markDirty();
       feedback('立绘已载入，可调整位置后保存。');
     });
@@ -300,7 +275,7 @@
         snapshot = await service.getSnapshot();
       }
       pendingPortrait = undefined; dirty = false;
-      $('image-status').textContent = snapshot && snapshot.portrait && snapshot.portrait.dataUrl ? '立绘已保存，可在息屏快照中显示' : '图片会自动缩小，适配背屏显示';
+      $('image-status').textContent = snapshot && snapshot.portrait && snapshot.portrait.dataUrl ? '立绘已保存，可在息屏快照中显示' : '保留最高 1600 像素长边，优先使用高清 WebP';
       fillForm();
       feedback(previewMode ? '预览已更新。安装模块后即可保存到背屏。' : '已保存并通知背屏更新。');
     });
@@ -311,9 +286,9 @@
       var now = Date.now();
       snapshot = { schemaVersion: 1, settings: settings, stamina: { current: 168, max: 240, updatedAt: now, recoveryAt: now + 432 * 60000, secondsPerPoint: 360 }, profile: { name: '管理员#1234', level: 45, server: '国服' }, syncedAt: now, portrait: null, error: null };
       snapshot.dashboard = {
-        glory: { count: 28, medals: [
-          { id: 'demo-medal-1', name: '演示奖章 · 探索', category: '探索', level: 1, isPlated: false },
-          { id: 'demo-medal-2', name: '演示奖章 · 挑战', category: '挑战', level: 2, isPlated: true }
+        glory: { count: 28, displayKnown: true, displayCount: 2, medals: [
+          { id: 'demo-medal-1', name: '展示蚀刻章 · 示例一', category: '探索', level: 1, isPlated: false, iconDataUrl: null },
+          { id: 'demo-medal-2', name: '展示蚀刻章 · 示例二', category: '挑战', level: 2, isPlated: true, iconDataUrl: null }
         ] },
         operatorCount: 18, operators: [
           { id: 'demo-operator-1', name: '演示干员 A', level: 60, evolvePhase: 2, potentialLevel: 0, rarity: '6',

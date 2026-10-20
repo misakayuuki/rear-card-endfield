@@ -69,7 +69,7 @@ test('zero stamina is valid, server timestamps use milliseconds and missing valu
 test('dashboard uses observed achievement and character fields, preserving zero and missing values', () => {
   const input = structuredClone(detail);
   input.detail.base.charNum = '0';
-  input.detail.achieve = { count: '0', achieveMedals: [
+  input.detail.achieve = { count: '0', display: { 1: 'medal-1', 2: 'medal-2' }, achieveMedals: [
     { level: 0, isPlated: false, achievementData: { id: 'medal-1', name: '测试奖章', cateName: '探索', initLevel: 2 } },
     { achievementData: { id: 'medal-2', name: '另一奖章', initLevel: 2 } }
   ] };
@@ -83,6 +83,8 @@ test('dashboard uses observed achievement and character fields, preserving zero 
   }];
   const dashboard = A.normalizeDetail(input, role).dashboard;
   assert.equal(dashboard.glory.count, 0);
+  assert.equal(dashboard.glory.displayKnown, true);
+  assert.equal(dashboard.glory.displayCount, 2);
   assert.equal(dashboard.glory.medals[0].level, 0);
   assert.equal(dashboard.glory.medals[0].isPlated, false);
   assert.equal(dashboard.glory.medals[1].level, null, 'initial medal level must not substitute for a missing player level');
@@ -122,11 +124,12 @@ test('missing or malformed optional dashboard data never turns into zero or disc
   }
 });
 
-test('dashboard bounds multibyte data and excludes payloads, URLs and private fields', () => {
+test('dashboard bounds multibyte data and excludes payloads, unselected image URLs and private fields', () => {
   const input = structuredClone(detail), longName = '很长的中文名称😀'.repeat(200);
   input.detail.base.charNum = 200;
-  input.detail.achieve = { count: 200, secret: 'PRIVATE_RESPONSE', achieveMedals: Array.from({ length: 200 }, (_, i) => ({
-    level: 1, achievementData: { id: 'medal-' + i, name: longName, cateName: longName, initIcon: 'https://private.invalid/PRIVATE_RESPONSE' }
+  input.detail.achieve = { count: 200, secret: 'PRIVATE_RESPONSE', display: Object.fromEntries(Array.from({length:40}, (_, i) => [i+1,'medal-'+i])), achieveMedals: Array.from({ length: 200 }, (_, i) => ({
+    level: 1, achievementData: { id: 'medal-' + i, name: longName, cateName: longName,
+      initIcon: i < 40 ? 'https://cdn.example/medal.png' : 'https://private.invalid/PRIVATE_RESPONSE' }
   })) };
   input.detail.chars = Array.from({ length: 200 }, (_, i) => ({
     id: 'private-player-instance', ownTs: 'PRIVATE_RESPONSE', level: 60,
@@ -144,10 +147,58 @@ test('dashboard bounds multibyte data and excludes payloads, URLs and private fi
   assert.equal(dashboard.medalsTruncated, true);
   assert.equal(dashboard.operatorCount, 200);
   assert.equal(dashboard.glory.count, 200);
+  assert.equal(dashboard.glory.displayCount, 40);
   assert.equal(dashboard.operators[0].skills.length, 8);
   assert.ok(!json.includes('PRIVATE_RESPONSE'));
-  assert.ok(!json.includes('https://'));
+  assert.ok(json.includes('https://cdn.example/medal.png'));
   assert.ok(!json.includes('private-player-instance'));
+});
+
+test('etching showcase follows selected slot order and chooses the achieved artwork variant', () => {
+  const input = structuredClone(detail);
+  const icons = {initIcon:'https://cdn.example/init.png',platedIcon:'https://cdn.example/plated.png',
+    reforge2Icon:'https://cdn.example/reforge2.png',reforge3Icon:'https://cdn.example/reforge3.png'};
+  input.detail.achieve = {count:50,display:{10:'three',2:'two',1:'plated',3:'missing',4:'unsafe'},achieveMedals:[
+    {level:3,isPlated:true,achievementData:{id:'three',name:'三级',...icons}},
+    {level:2,isPlated:true,achievementData:{id:'two',name:'二级',...icons}},
+    {level:1,isPlated:true,achievementData:{id:'plated',name:'镀层',...icons}},
+    {level:2,achievementData:{id:'unsafe',name:'安全回退',reforge2Icon:'http://cdn.example/plain.png',initIcon:icons.initIcon}},
+    {level:3,achievementData:{id:'unselected',name:'不能展示',...icons}}
+  ]};
+  const glory = A.normalizeDetail(input, role).dashboard.glory;
+  assert.deepEqual(Array.from(glory.medals, medal=>medal.id), ['plated','two','missing','unsafe','three']);
+  assert.deepEqual(Array.from(glory.medals, medal=>medal.slot), ['1','2','3','4','10']);
+  assert.deepEqual(Array.from(glory.medals, medal=>medal.iconUrl), [icons.platedIcon,icons.reforge2Icon,null,icons.initIcon,icons.reforge3Icon]);
+  assert.equal(glory.medals[2].name, '');
+  assert.equal(glory.displayCount, 5);
+  assert.ok(!JSON.stringify(glory).includes('unselected'));
+});
+
+test('missing or empty showcase never falls back to all acquired medals', () => {
+  const input = structuredClone(detail);
+  input.detail.achieve = {count:10,achieveMedals:[{level:1,achievementData:{id:'medal-1',name:'已获得'}}]};
+  let glory = A.normalizeDetail(input, role).dashboard.glory;
+  assert.equal(glory.displayKnown, false);
+  assert.equal(glory.displayCount, null);
+  assert.equal(glory.medals.length, 0);
+  input.detail.achieve.display = {};
+  glory = A.normalizeDetail(input, role).dashboard.glory;
+  assert.equal(glory.displayKnown, true);
+  assert.equal(glory.displayCount, 0);
+  assert.equal(glory.medals.length, 0);
+  input.detail.achieve.display = {type:1,achieveMedalId:'medal-1'};
+  glory = A.normalizeDetail(input, role).dashboard.glory;
+  assert.equal(glory.displayKnown, true);
+  assert.equal(glory.medals[0].id, 'medal-1');
+  assert.equal(glory.medals[0].iconUrl, null);
+  input.detail.achieve.display = {arbitrary:'medal-1'};
+  glory = A.normalizeDetail(input, role).dashboard.glory;
+  assert.equal(glory.displayKnown, false);
+  assert.equal(glory.medals.length, 0);
+  input.detail.achieve.display = {1:{id:'medal-1'}};
+  glory = A.normalizeDetail(input, role).dashboard.glory;
+  assert.equal(glory.displayKnown, false, 'malformed values must not be reported as a known empty showcase');
+  assert.equal(glory.displayCount, null);
 });
 
 test('connect performs official grant, credential exchange, identity lookup and binding', async () => {

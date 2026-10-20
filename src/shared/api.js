@@ -51,23 +51,56 @@
     }
     return bytes;
   }
+  function imageUrl(value) {
+    return typeof value === 'string' && value.length <= 2048 && /^https:\/\/[^\s/@]+(?:\/[^\s]*)?$/i.test(value) ? value : null;
+  }
+  function selectedMedals(display) {
+    if (!display || typeof display !== 'object' || Array.isArray(display)) return { known: false, entries: [] };
+    // Both the current slot -> medal-ID map and the older single-medal schema are observed upstream.
+    var single = Object.prototype.hasOwnProperty.call(display, 'achieveMedalId');
+    var keys = Object.keys(display);
+    if (!single && keys.some(function (key) { return !/^\d+$/.test(key); })) return { known: false, entries: [] };
+    var entries = [], ids = Object.create(null), malformed = false;
+    (single ? ['achieveMedalId'] : keys.sort(function (a, b) { return Number(a) - Number(b); })).forEach(function (slot) {
+      var value = display[slot];
+      if (value === null || value === undefined || value === '') return;
+      if (typeof value !== 'string' || value.length > 80) { malformed = true; return; }
+      if (!value.trim()) return;
+      var id = value.trim();
+      if (ids[id]) return;
+      ids[id] = true;
+      entries.push({ id: id, slot: single ? '1' : slot });
+    });
+    return malformed ? { known: false, entries: [] } : { known: true, entries: entries };
+  }
+  function medalIcon(data, level, plated) {
+    var options = [level >= 3 && data.reforge3Icon, level >= 2 && data.reforge2Icon,
+      plated === true && data.platedIcon, data.initIcon];
+    for (var i = 0; i < options.length; i++) { var url = imageUrl(options[i]); if (url) return url; }
+    return null;
+  }
   function normalizeDashboard(detail) {
     var source = record(detail.achieve);
     var medals = Array.isArray(source.achieveMedals) ? source.achieveMedals : [];
     var chars = Array.isArray(detail.chars) ? detail.chars : [];
+    var selection = selectedMedals(source.display);
     var dashboard = { glory: null, operatorCount: count(record(detail.base).charNum), operators: [],
-      operatorsTruncated: chars.length > 64, medalsTruncated: medals.length > 32 };
-    // These are the account's displayed medals, not a complete achievement catalogue.
+      operatorsTruncated: chars.length > 64, medalsTruncated: selection.entries.length > 32 };
+    // achieveMedals is the catalogue returned for this account; only display selects the showcase.
     if (Object.keys(source).length) {
-      dashboard.glory = { count: count(source.count), medals: [] };
-      var medalIds = Object.create(null);
-      medals.slice(0, 32).forEach(function (value) {
+      dashboard.glory = { count: count(source.count), displayKnown: selection.known,
+        displayCount: selection.known ? selection.entries.length : null, medals: [] };
+      var medalMap = Object.create(null);
+      medals.forEach(function (value) {
         var medal = record(value), data = record(medal.achievementData);
-        var id = label(data.id, 80), name = label(data.name);
-        if ((!id && !name) || (id && medalIds[id])) return;
-        if (id) medalIds[id] = true;
-        dashboard.glory.medals.push({ id: id, name: name, category: label(data.cateName),
-          level: count(medal.level), isPlated: typeof medal.isPlated === 'boolean' ? medal.isPlated : null });
+        var id = label(data.id, 80);
+        if (id && !medalMap[id]) medalMap[id] = medal;
+      });
+      selection.entries.slice(0, 32).forEach(function (selected) {
+        var medal = record(medalMap[selected.id]), data = record(medal.achievementData);
+        var level = count(medal.level), plated = typeof medal.isPlated === 'boolean' ? medal.isPlated : null;
+        dashboard.glory.medals.push({ id: selected.id, name: label(data.name), category: label(data.cateName),
+          level: level, isPlated: plated, iconUrl: medalIcon(data, level, plated), slot: selected.slot });
       });
     }
     var operatorIds = Object.create(null);

@@ -8,7 +8,7 @@
       stamina: mode === 'empty' ? null : {current:mode==='zero'?0:mode==='full'?240:128,max:240,
         updatedAt:mode==='error'?now-7200000:now,recoveryAt:now+112*360000,secondsPerPoint:null},
       profile:mode==='empty'?null:{name:'管理员#1234',level:45,server:'国服 · 示例数据'},portrait:art?{dataUrl:art}:null,syncedAt:mode==='error'?now-7200000:now,
-      dashboard:mode==='empty'?null:{glory:{count:126,medals:[
+      dashboard:mode==='empty'?null:{glory:{count:126,displayKnown:true,displayCount:3,medals:[
         {id:'demo1',name:'开拓旅程 · 示例奖章',category:'探索成就',level:3,isPlated:true},
         {id:'demo2',name:'并肩前行 · 示例奖章',category:'干员成就',level:2,isPlated:false},
         {id:'demo3',name:'工业之光 · 示例奖章',category:'建设成就',level:1,isPlated:false}]},

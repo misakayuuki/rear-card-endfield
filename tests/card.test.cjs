@@ -24,9 +24,11 @@ function runtime(cached, serviceOverrides) {
   const labels = [];
   const textPositions = [];
   const imageBoxes = [];
+  const imageObjects = [];
+  const refreshCallbacks = [];
   const context = new Proxy({
     measureText: t => ({ width: String(t).length * 12 }),
-    drawImage(image, x, y, w, h) { counts.images++; imageBoxes.push({ x, y, w, h }); },
+    drawImage(image, x, y, w, h) { counts.images++; imageBoxes.push({ x, y, w, h, source: image.source }); },
     fillRect() { counts.fills++; },
     fillText(t, x, y) { labels.push(String(t)); textPositions.push({ text: String(t), x, y }); }
   }, { get: (o, k) => k in o ? o[k] : (() => {}), set: (o, k, v) => (o[k] = v, true) });
@@ -44,9 +46,10 @@ function runtime(cached, serviceOverrides) {
   const sandbox = {
     document: { getElementById: () => canvas }, Date, Math, Number, Promise,
     Image: class {
-      set src(value) { counts.sources++; this.width = 200; this.height = 400; if (this.onload) this.onload(); }
+      constructor() { imageObjects.push(this); }
+      set src(value) { counts.sources++; this.source = value; this.width = 200; this.height = 400; if (this.onload) this.onload(); }
     },
-    bridge: { card: { readSnapshot: () => cached, onRefresh() {} }, config: { onChange() {} } },
+    bridge: { card: { readSnapshot: () => cached, onRefresh(fn) { refreshCallbacks.push(fn); } }, config: { onChange() {} } },
     EndfieldService: { create: () => service },
     requestAnimationFrame: f => (frames.push(f), frames.length), cancelAnimationFrame() {},
     setInterval: () => 1, clearInterval: () => { counts.timerClears++; }
@@ -58,7 +61,7 @@ function runtime(cached, serviceOverrides) {
   function emit(type, props) { for (const fn of listeners.get(type) || []) fn(Object.assign({ isPrimary: true }, props)); }
   function frame() { const fn = frames.shift(); if (fn) { labels.length = 0; textPositions.length = 0; fn(); } }
   execute();
-  return { counts, frames, labels, textPositions, imageBoxes, listeners, sandbox, execute, emit, frame };
+  return { counts, frames, labels, textPositions, imageBoxes, imageObjects, refreshCallbacks, listeners, sandbox, execute, emit, frame };
 }
 
 function tap(r, x, y, pointerId = 1) {
@@ -188,8 +191,7 @@ test('navigation shows unknown data as unavailable and keeps displayed operators
   r.frame();
   tap(r, 520, 550);
   assert(r.labels.includes('光荣之路'));
-  assert(r.labels.includes('--'));
-  assert(r.labels.includes('暂无可展示奖章'));
+  assert(r.labels.includes('请同步蚀刻章展示信息'));
   tap(r, 630, 550);
   assert(r.labels.includes('干员养成'));
   assert(r.labels.includes('暂无干员养成数据'));
@@ -199,7 +201,7 @@ test('navigation shows unknown data as unavailable and keeps displayed operators
 test('operators, all skill pages, equipment and medal pages can be browsed independently', () => {
   const cached = snapshot();
   cached.dashboard = {
-    glory: { count: 99, medals: Array.from({ length: 4 }, (_, i) => ({ name: '奖章' + i, category: '探索', level: 2, isPlated: i === 3 })) },
+    glory: { count: 99, displayKnown: true, displayCount: 7, medals: Array.from({ length: 7 }, (_, i) => ({ name: '蚀刻章' + i, category: '探索', level: 2, isPlated: i === 6 })) },
     operatorCount: 28,
     operators: [
       { name: '陈千语', level: 80, evolvePhase: 3, potentialLevel: 2, weapon: { name: '测试武器', level: 60, refineLevel: 1, breakthroughLevel: 2 },
@@ -210,11 +212,13 @@ test('operators, all skill pages, equipment and medal pages can be browsed indep
   const r = runtime(cached);
   r.frame();
   tap(r, 520, 550);
-  assert(r.labels.includes('99'));
-  assert(r.labels.includes('奖章0'));
-  tap(r, 850, 275);
-  assert(r.labels.includes('奖章3'));
-  assert(r.labels.includes('探索 · Lv.2 · 镀层'));
+  assert(!r.labels.includes('99'), 'the showcase does not substitute a large achievement total for the selected artwork');
+  assert(r.labels.includes('蚀刻章0'));
+  assert(r.labels.includes('蚀刻章5'));
+  assert(!r.labels.includes('蚀刻章6'));
+  tap(r, 850, 190);
+  assert(r.labels.includes('蚀刻章6'));
+  assert(!r.labels.includes('蚀刻章0'));
   tap(r, 630, 550);
   assert(r.labels.includes('陈千语'));
   assert(r.labels.includes('晋升 3 · 潜能 2'));
@@ -231,6 +235,65 @@ test('operators, all skill pages, equipment and medal pages can be browsed indep
   assert(r.labels.includes('暂未提供装备资料'));
   assert(!r.labels.includes('Lv.0'));
   assert.equal(r.counts.refreshes, 0);
+});
+
+test('showcase image data is decoded before asynchronous work and reused across navigation and refreshes', async () => {
+  const cached = snapshot();
+  const one = 'data:image/png;base64,AAAA', two = 'data:image/webp;base64,BBBB';
+  cached.dashboard = {glory:{displayKnown:true,displayCount:7,medals:Array.from({length:7}, (_,i)=>({
+    id:'selected-'+i,name:'蚀刻章'+i,slot:String(i+1),iconDataUrl:i%2?two:one
+  }))}};
+  const r = runtime(cached,{getSnapshot:async()=>cached,getSettings:async()=>cached.settings});
+  assert.equal(r.counts.sources,3,'portrait and two unique medal Data URLs are ready synchronously');
+  assert.equal(r.counts.images,0,'images are still drawn only in RAF');
+  await new Promise(resolve=>setImmediate(resolve));
+  r.frame();
+  tap(r,520,550);
+  const icons = r.imageBoxes.filter(box=>box.source===one||box.source===two);
+  assert.equal(icons.length,6);
+  assert(icons.every(box=>box.w===50&&box.h===100),'gallery preserves icon aspect ratio inside the 100px box');
+  assert(r.labels.includes('蚀刻章0'));
+  assert(!r.labels.includes('待同步图案'));
+  tap(r,850,190);
+  assert(r.labels.includes('蚀刻章6'));
+  assert.equal(r.counts.sources,3);
+  r.refreshCallbacks.forEach(fn=>fn());
+  await new Promise(resolve=>setImmediate(resolve));
+  r.frame();
+  assert.equal(r.counts.sources,3,'identical cached images are not decoded again');
+  const oldIcons = r.imageObjects.slice(1);
+  cached.dashboard.glory.medals=[];
+  cached.dashboard.glory.displayCount=0;
+  r.refreshCallbacks.forEach(fn=>fn());
+  await new Promise(resolve=>setImmediate(resolve));
+  r.frame();
+  assert(r.labels.includes('尚未设置展示蚀刻章'));
+  assert(oldIcons.every(image=>image.onload===null&&image.onerror===null),'unused images release their handlers');
+});
+
+test('legacy unselected medals and missing image data never masquerade as a real showcase', () => {
+  const cached = snapshot();
+  cached.dashboard = {glory:{count:99,medals:[{name:'不应展示的旧章',iconDataUrl:'data:image/png;base64,AAAA'}]}};
+  const old = runtime(cached);
+  old.frame();tap(old,520,550);
+  assert(old.labels.includes('请同步蚀刻章展示信息'));
+  assert(!old.labels.includes('不应展示的旧章'));
+  assert.equal(old.counts.sources,1,'legacy medals are not even decoded');
+  cached.dashboard.glory={displayKnown:true,displayCount:2,medals:[
+    {name:'缺少图片',iconUrl:'https://cdn.example/image.png'},
+    {name:'无效图片',iconDataUrl:'data:image/png;base64,'+'A'.repeat(24000)}
+  ]};
+  const pending = runtime(cached);
+  pending.frame();tap(pending,520,550);
+  assert(pending.labels.includes('缺少图片'));
+  assert(pending.labels.includes('待同步图案'));
+  assert.equal(pending.counts.sources,1,'remote URLs and oversized image data are not loaded by Canvas');
+  assert.equal(pending.counts.images,2,'only the portrait draws on the two frames');
+  const ready = snapshot();ready.dashboard={glory:{displayKnown:true,displayCount:1,medals:[{name:'测试章',iconDataUrl:'data:image/png;base64,AAAA'}]}};
+  const hot = runtime(ready), oldImage = hot.imageObjects[1];
+  hot.execute();
+  assert.equal(oldImage.onload,null);
+  assert.equal(oldImage.onerror,null);
 });
 
 test('portrait uses the enlarged viewport and user-controlled scale', () => {

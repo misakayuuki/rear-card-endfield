@@ -21,6 +21,7 @@
   var portraitImage = null;
   var portraitSource = '';
   var imageFailed = false;
+  var medalImages = Object.create(null);
   var state = { schemaVersion: 1, settings: {}, stamina: null, profile: null, portrait: null, syncedAt: 0, error: null };
   var refreshHit = { x: 720, y: 518, w: 156, h: 54 };
   var page = 0;
@@ -46,6 +47,7 @@
     if (stopped || !core.validSnapshot(value)) return false;
     state = value;
     updatePortrait();
+    updateMedalImages();
     requestDraw();
     return true;
   }
@@ -69,6 +71,34 @@
       requestDraw();
     };
     image.src = next;
+  }
+
+  function medalSource(medal) {
+    var source = medal && medal.iconDataUrl;
+    return typeof source === 'string' && source.length <= 24000 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(source) ? source : '';
+  }
+
+  function updateMedalImages() {
+    var old = medalImages, next = Object.create(null);
+    Object.keys(old).forEach(function (source) { old[source].active = false; });
+    var glory = state.dashboard && state.dashboard.glory;
+    var medals = glory && glory.displayKnown === true && Array.isArray(glory.medals) ? glory.medals.slice(0, 32) : [];
+    medals.forEach(function (medal) {
+      var source = medalSource(medal);
+      if (!source || next[source]) return;
+      var entry = old[source];
+      if (entry) { entry.active = true; next[source] = entry; return; }
+      entry = { image: new Image(), failed: false, active: true };
+      next[source] = entry;
+      entry.image.onload = function () { if (!stopped && entry.active) requestDraw(); };
+      entry.image.onerror = function () { if (!stopped && entry.active) { entry.failed = true; requestDraw(); } };
+      // Prepare cached Data URLs synchronously for the first AOD draw, never fetch from Canvas.
+      entry.image.src = source;
+    });
+    Object.keys(old).forEach(function (source) {
+      if (!old[source].active) { old[source].image.onload = null; old[source].image.onerror = null; }
+    });
+    medalImages = next;
   }
 
   function text(value, x, y, size, color, weight, maxWidth) {
@@ -204,38 +234,46 @@
   function drawGlory(cfg, x, right, width) {
     var dashboard = state.dashboard || {};
     var glory = dashboard.glory;
-    var medals = glory && Array.isArray(glory.medals) ? glory.medals : [];
-    text('已达成成就', x, 183, 18, '#9aa69d', '', width / 2);
-    text(available(glory && glory.count), x, 229, 60, '#f3f4e9', 'bold', width / 2);
-    text('展示奖章 ' + medals.length, x + width * 0.55, 193, 18, cfg.accent, '', width * 0.45);
-    text('森空岛角色资料', x + width * 0.55, 225, 15, '#9aa69d', '', width * 0.45);
-    if (!medals.length) {
-      text(glory ? '暂无可展示奖章' : '暂无光荣之路数据', x, 327, 26, '#f3f4e9', 'bold', width);
-      text('同步后显示森空岛返回的成就与奖章', x, 368, 17, '#9aa69d', '', width);
-      text('可在森空岛检查角色资料展示设置', x, 399, 17, '#9aa69d', '', width);
+    var known = glory && glory.displayKnown === true;
+    var medals = known && Array.isArray(glory.medals) ? glory.medals.slice(0, 32) : [];
+    text('森空岛展示的蚀刻章', x, 181, 18, '#c4cec3', '', width - 110);
+    if (!known) {
+      text('请同步蚀刻章展示信息', x, 292, 26, '#f3f4e9', 'bold', width);
+      text('在模块设置页点按同步，读取森空岛展示栏', x, 340, 17, '#9aa69d', '', width);
+      text('只显示你选中展示的蚀刻章', x, 374, 17, '#9aa69d', '', width);
       return;
     }
-    var pages = Math.ceil(medals.length / 3);
+    if (!medals.length) {
+      text(glory.displayCount > 0 ? '蚀刻章资料待同步' : '尚未设置展示蚀刻章', x, 292, 26, '#f3f4e9', 'bold', width);
+      text('在森空岛设置想展示的蚀刻章', x, 340, 17, '#9aa69d', '', width);
+      text('返回模块设置页同步后即可查看图案', x, 374, 17, '#9aa69d', '', width);
+      return;
+    }
+    var pages = Math.ceil(medals.length / 6);
     medalPage = Math.min(medalPage, pages - 1);
-    text('展示列表 ' + (medalPage + 1) + '/' + pages, x, 276, 16, '#9aa69d', '', width - 124);
+    text('展示 ' + available(glory.displayCount) + ' 枚 · ' + (medalPage + 1) + '/' + pages + (dashboard.medalsTruncated ? ' · 部分缓存' : ''), x, 207, 15, '#9aa69d', '', width - 110);
     if (pages > 1) {
-      button('‹', { x: right - 100, y: 257, w: 44, h: 36 }, function () { medalPage = (medalPage + pages - 1) % pages; requestDraw(); }, false, cfg);
-      button('›', { x: right - 48, y: 257, w: 44, h: 36 }, function () { medalPage = (medalPage + 1) % pages; requestDraw(); }, false, cfg);
+      button('‹', { x: right - 100, y: 172, w: 44, h: 36 }, function () { medalPage = (medalPage + pages - 1) % pages; requestDraw(); }, false, cfg);
+      button('›', { x: right - 48, y: 172, w: 44, h: 36 }, function () { medalPage = (medalPage + 1) % pages; requestDraw(); }, false, cfg);
     }
-    for (var i = 0; i < 3 && medalPage * 3 + i < medals.length; i++) {
-      var medal = medals[medalPage * 3 + i];
-      var y = 310 + i * 59;
-      ctx.fillStyle = '#1d2623';
-      ctx.fillRect(x, y - 8, width, 51);
-      ctx.fillStyle = cfg.accent;
-      ctx.fillRect(x, y - 8, 3, 51);
-      text(medal.name || '未命名奖章', x + 14, y + 7, 19, '#f3f4e9', 'bold', width - 28);
-      var detail = medal.category || '类别未提供';
-      if (medal.level !== null && medal.level !== undefined) detail += ' · Lv.' + medal.level;
-      if (medal.isPlated === true) detail += ' · 镀层';
-      text(detail, x + 14, y + 30, 14, '#9aa69d', '', width - 28);
+    var gap = 10, cellWidth = (width - gap * 2) / 3;
+    var iconSize = Math.min(100, cellWidth - 12);
+    for (var i = 0; i < 6 && medalPage * 6 + i < medals.length; i++) {
+      var medal = medals[medalPage * 6 + i];
+      var left = x + (i % 3) * (cellWidth + gap), top = 222 + Math.floor(i / 3) * 136;
+      ctx.fillStyle = 'rgba(26,34,31,0.82)';
+      ctx.fillRect(left, top, cellWidth, 130);
+      var entry = medalImages[medalSource(medal)];
+      var image = entry && !entry.failed && entry.image;
+      var iw = image && (image.naturalWidth || image.width), ih = image && (image.naturalHeight || image.height);
+      if (iw > 0 && ih > 0) {
+        var scale = Math.min(iconSize / iw, iconSize / ih), dw = iw * scale, dh = ih * scale;
+        ctx.drawImage(image, left + (cellWidth - dw) / 2, top + 5 + (100 - dh) / 2, dw, dh);
+      } else {
+        text(entry && entry.failed ? '图案加载失败' : '待同步图案', left + 8, top + 54, 13, '#9aa69d', '', cellWidth - 16);
+      }
+      text(medal.name || '资料待同步', left + 8, top + 116, 15, '#f3f4e9', '', cellWidth - 16);
     }
-    text(dashboard.medalsTruncated ? '仅缓存部分展示奖章' : '此处为展示奖章，可能不是全部成就', x, 483, 15, '#9aa69d', '', width);
   }
 
   function drawOperators(cfg, x, right, width) {
@@ -457,6 +495,12 @@
     if (timerId !== null) window.clearInterval(timerId);
     if (frameId !== null && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(frameId);
     if (portraitImage) { portraitImage.onload = null; portraitImage.onerror = null; }
+    Object.keys(medalImages).forEach(function (source) {
+      medalImages[source].active = false;
+      medalImages[source].image.onload = null;
+      medalImages[source].image.onerror = null;
+    });
+    medalImages = Object.create(null);
     if (typeof canvas.removeEventListener === 'function') {
       for (var k = 0; k < listeners.length; k++) canvas.removeEventListener(listeners[k][0], listeners[k][1]);
     }

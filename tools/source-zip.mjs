@@ -14,7 +14,7 @@ async function add(name){
     else if(child.isFile())entries[relative]=new Uint8Array(await readFile(path.join(root,relative)));
   }
 }
-for(const dir of ['src','tools','tests'])await add(dir);
+for(const dir of ['src','tools','tests','previews'])await add(dir);
 for(const name of ['package.json','package-lock.json','README.md','.gitignore','research/api-notes.md']){
   entries[name]=new Uint8Array(await readFile(path.join(root,name)));
 }
