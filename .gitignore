@@ -1,0 +1,10 @@
+node_modules/
+.cache/
+upstream/
+build/
+output/
+.playwright-cli/
+dist/
+submission/
+research/*
+!research/api-notes.md

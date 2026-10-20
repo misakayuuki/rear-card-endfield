@@ -1,0 +1,14 @@
+{
+  "name": "endfield-rear-card",
+  "version": "1.1.0",
+  "private": true,
+  "description": "终末地国服体力、光荣之路、干员养成与自定义角色立绘背屏模块",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "test": "node --test tests/*.test.cjs",
+    "preview": "node tools/preview-server.mjs",
+    "verify": "node tools/verify-package.mjs",
+    "source": "node tools/source-zip.mjs"
+  },
+  "dependencies": { "crypto-js": "4.2.0" }
+}
