@@ -9,6 +9,7 @@
   <script src="bridge-shim.js"></script>
   <script src="crypto.js"></script>
   <script src="core.js"></script>
+  <script src="cache.js"></script>
   <script src="api.js"></script>
   <script src="media.js"></script>
   <script src="service.js"></script>
@@ -36,8 +37,8 @@
             </div>
           </div>
           <div class="preview-caption"><span class="square"></span><p>在预览中左右滑动，可切换体力、光荣之路和干员养成。左侧为镜头遮挡示意，真机显示以设备尺寸为准。</p></div>
-          <div class="sync-panel"><div><span class="label-small">最近同步</span><p id="sync-status">尚未连接账号</p></div><button id="refresh-button" class="icon-button" type="button" aria-label="立即刷新数据" title="立即刷新数据">↻</button></div>
-          <div class="note-box"><span class="note-symbol">i</span><p>在卡片桥的「设置与关于」开启后台刷新。息屏时保存最新快照，背屏再次显示时读取。</p></div>
+          <div class="sync-panel"><div><span class="label-small">最近更新</span><p id="sync-status">尚未连接账号</p></div><button id="refresh-button" class="button secondary compact" type="button">同步全部资料</button></div>
+          <div class="note-box"><span class="note-symbol">i</span><p>背屏按钮和自动刷新只更新理智。蚀刻章与干员资料请点「同步全部资料」手动更新；立绘仅在你选择并保存时更换。后台自动刷新需在卡片桥「设置与关于」开启。</p></div>
         </aside>
         <div class="settings-column">
           <section class="panel" aria-labelledby="account-title">
@@ -60,16 +61,18 @@
           </section>
           <form id="appearance-form">
             <section class="panel" aria-labelledby="portrait-title"><div class="section-heading"><div class="section-number">02</div><div><h2 id="portrait-title">让喜欢的干员常驻</h2><p>选择立绘，调整到最合适的位置</p></div></div>
-              <div class="owned-picker"><label for="character-select">从森空岛展示的干员选择</label><div class="token-row"><select id="character-select" disabled><option>连接账号并同步后显示</option></select><button id="choose-character" type="button" class="button secondary compact" disabled>使用立绘</button></div><p id="owned-help" class="field-help">可选范围以森空岛返回的干员为准，也可以上传本地图片。</p></div>
+              <div class="owned-picker"><label for="character-select">从森空岛展示的干员选择</label><div class="token-row"><select id="character-select" disabled><option>同步全部资料后显示</option></select><button id="choose-character" type="button" class="button secondary compact" disabled>使用立绘</button></div><p id="owned-help" class="field-help">可选范围以森空岛返回的干员为准，也可以上传本地图片；立绘不会随刷新更换。</p></div>
               <label for="portrait-file" class="upload-area"><span class="upload-symbol" aria-hidden="true">＋</span><span><strong id="upload-label">选择本地角色立绘</strong><small>PNG / JPG / WebP · 支持透明背景</small></span><span class="upload-arrow" aria-hidden="true">↗</span><input id="portrait-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
               <div class="image-meta"><span id="image-status">保留最高 1600 像素长边，优先使用高清 WebP</span><button id="remove-image" type="button" class="text-button" hidden>移除立绘</button></div>
+              <button id="reduce-image" type="button" class="button secondary compact" disabled>降低当前立绘占用</button>
+              <p class="field-help">背屏仍因图片占用过高而不稳定时，可在本地将当前立绘缩至最长边 1280 像素，并保留透明背景。处理后点击保存才会应用；此操作不下载图片，也不会在同步时自动进行。</p>
               <p class="field-help">升级后请重新选择原图，或再次点击「使用立绘」。旧版保存的小图无法自动恢复清晰度。</p>
               <div class="field"><label for="character-name">干员名称 <span>可选</span></label><input id="character-name" maxlength="24" placeholder="例如：伊冯、佩丽卡、莱万汀"></div>
               <div class="field"><label for="portrait-fit">显示方式</label><select id="portrait-fit"><option value="cover">铺满画面 · 裁去边缘</option><option value="contain">完整立绘 · 保留全身</option></select></div>
               <div class="field"><label for="portrait-scale">立绘大小 <output id="portrait-scale-value" for="portrait-scale">120%</output></label><input id="portrait-scale" type="range" min="1" max="2.5" step="0.05" value="1.2"><div class="portrait-scale-help"><p class="field-help">放大后可调整左右、上下位置，突出喜欢的角色。</p><button id="reset-portrait-layout" type="button" class="text-button">重置构图</button></div></div>
               <div class="range-grid"><div class="field"><label for="portrait-x">左右位置 <output id="portrait-x-value" for="portrait-x">50%</output></label><input id="portrait-x" type="range" min="0" max="100" value="50"></div><div class="field"><label for="portrait-y">上下位置 <output id="portrait-y-value" for="portrait-y">40%</output></label><input id="portrait-y" type="range" min="0" max="100" value="40"></div></div>
             </section>
-            <section class="panel" aria-labelledby="display-title"><div class="section-heading"><div class="section-number">03</div><div><h2 id="display-title">显示与刷新</h2><p>适配你的背屏使用习惯</p></div></div><div class="field"><label for="accent-color">强调色</label><div class="color-row"><input type="color" id="accent-color" value="#e5f56a" aria-label="选择强调色"><span id="accent-value">#E5F56A</span><button type="button" class="swatch" data-color="#E5F56A" style="--swatch:#E5F56A" aria-label="荧光黄"></button><button type="button" class="swatch" data-color="#6EDCD0" style="--swatch:#6EDCD0" aria-label="薄荷青"></button><button type="button" class="swatch" data-color="#F4A37D" style="--swatch:#F4A37D" aria-label="暖橙"></button><button type="button" class="swatch" data-color="#DBD6FF" style="--swatch:#DBD6FF" aria-label="浅紫"></button></div></div><div class="range-grid"><div class="field"><label for="refresh-minutes">点亮时刷新间隔</label><select id="refresh-minutes"><option value="5">5 分钟</option><option value="15" selected>15 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option></select></div><div class="field"><label for="safe-left">镜头预留宽度 <output id="safe-left-value" for="safe-left">336</output></label><input id="safe-left" type="range" min="0" max="500" step="4" value="336"></div></div><p class="field-help">预留宽度以 912 宽画布为基准。后台刷新间隔请在卡片桥的模块详情中设置，系统省电可能延迟执行。</p></section>
+            <section class="panel" aria-labelledby="display-title"><div class="section-heading"><div class="section-number">03</div><div><h2 id="display-title">显示与刷新</h2><p>适配你的背屏使用习惯</p></div></div><div class="field"><label for="accent-color">强调色</label><div class="color-row"><input type="color" id="accent-color" value="#e5f56a" aria-label="选择强调色"><span id="accent-value">#E5F56A</span><button type="button" class="swatch" data-color="#E5F56A" style="--swatch:#E5F56A" aria-label="荧光黄"></button><button type="button" class="swatch" data-color="#6EDCD0" style="--swatch:#6EDCD0" aria-label="薄荷青"></button><button type="button" class="swatch" data-color="#F4A37D" style="--swatch:#F4A37D" aria-label="暖橙"></button><button type="button" class="swatch" data-color="#DBD6FF" style="--swatch:#DBD6FF" aria-label="浅紫"></button></div></div><div class="range-grid"><div class="field"><label for="refresh-minutes">点亮时刷新间隔</label><select id="refresh-minutes"><option value="5">5 分钟</option><option value="15" selected>15 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option></select></div><div class="field"><label for="safe-left">镜头预留宽度 <output id="safe-left-value" for="safe-left">336</output></label><input id="safe-left" type="range" min="0" max="500" step="4" value="336"></div></div><p class="field-help">预留宽度控制内容的左侧安全区，以 912 宽画布为基准；分割线靠近镜头，文字额外留白。后台刷新间隔请在卡片桥的模块详情中设置，系统省电可能延迟执行。</p></section>
             <div class="save-row"><span id="save-hint">调整后保存，即可应用到背屏</span><button id="save-button" class="button primary" type="submit">保存并应用 <span>↗</span></button></div>
           </form>
         </div>

@@ -12,6 +12,18 @@
       bytes: Math.max(0, Math.floor(base64.length * 3 / 4) - padding),
       mimeType: dataUrl.slice(5, dataUrl.indexOf(';')) };
   }
+  function fromDataUrl(dataUrl) {
+    var match = typeof dataUrl === 'string' && /^data:(image\/(?:png|jpeg|webp));base64,/.exec(dataUrl.slice(0, 24));
+    if (!match) throw new Error('立绘图片格式不支持，请使用本地上传。');
+    if (dataUrl.length - match[0].length > Math.ceil(20 * 1024 * 1024 / 3) * 4) throw new Error('图片超过 20 MB，请先缩小后选择。');
+    var binary;
+    try { binary = atob(dataUrl.slice(match[0].length)); }
+    catch (_) { throw new Error('立绘图片无法读取，请重新选择图片。'); }
+    if (!binary.length) throw new Error('立绘图片无法读取，请重新选择图片。');
+    var bytes = new Uint8Array(binary.length);
+    for (var index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], { type: match[1] });
+  }
   async function prepare(file, options) {
     options = options || {};
     if (!file || !/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error('请选择 PNG、JPG 或 WebP 图片。');
@@ -69,5 +81,5 @@
       URL.revokeObjectURL(url);
     }
   }
-  root.EndfieldImages = { prepare: prepare };
+  root.EndfieldImages = { prepare: prepare, fromDataUrl: fromDataUrl };
 })(typeof window !== 'undefined' ? window : globalThis);

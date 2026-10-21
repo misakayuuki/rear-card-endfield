@@ -8,6 +8,102 @@
     error.code = code;
     return error;
   }
+  function responseTurn() {
+    // The rear host drains resolved Promises within its current execution budget.
+    // Resolve from a frame callback so the remaining work runs in the next frame.
+    return new Promise(function (resolve) {
+      if (typeof root.requestAnimationFrame === 'function') root.requestAnimationFrame(function () { resolve(); });
+      else root.setTimeout(resolve, 0);
+    });
+  }
+  async function responseText(response) {
+    try {
+    var headers = response.headers || {};
+    var coding = headers['content-encoding'] || headers['Content-Encoding'] || '';
+    coding = String(Array.isArray(coding) ? coding.join(',') : coding).trim().toLowerCase();
+    if (coding && coding !== 'identity' && coding !== 'gzip') throw new Error('Unsupported response encoding');
+    // A plain response is also valid when the server declines gzip negotiation.
+    if (typeof response.bodyBase64 !== 'string') {
+      if (coding === 'gzip' || typeof response.body !== 'string') throw new Error('Missing response body');
+      return response.body;
+    }
+    var encoded = response.bodyBase64;
+    if (!encoded || encoded.length % 4 !== 0) throw new Error('Invalid response encoding');
+    var padding = encoded.slice(-2) === '==' ? 2 : encoded.slice(-1) === '=' ? 1 : 0;
+    var limit = 8 * 1024 * 1024;
+    var length = encoded.length / 4 * 3 - padding;
+    if (length > limit) throw new Error('Response too large');
+    await responseTurn();
+    var batchAt = Date.now();
+    var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var alphabetCodes = new Int16Array(128);
+    for (var code = 0; code < alphabetCodes.length; code++) alphabetCodes[code] = -1;
+    for (var symbol = 0; symbol < alphabet.length; symbol++) alphabetCodes[alphabet.charCodeAt(symbol)] = symbol;
+    var bytes = new Uint8Array(length);
+    for (var start = 0, at = 0; start < encoded.length; start += 8192) {
+      var end = Math.min(start + 8192, encoded.length);
+      for (var i = start; i < end; i += 4) {
+        var aCode = encoded.charCodeAt(i), bCode = encoded.charCodeAt(i + 1);
+        var cCode = encoded.charCodeAt(i + 2), dCode = encoded.charCodeAt(i + 3);
+        var a = aCode < 128 ? alphabetCodes[aCode] : -1, b = bCode < 128 ? alphabetCodes[bCode] : -1;
+        var c = cCode < 128 ? alphabetCodes[cCode] : -1, d = dCode < 128 ? alphabetCodes[dCode] : -1;
+        var last = i + 4 === encoded.length;
+        if (a < 0 || b < 0 || (c < 0 && !(last && cCode === 61 && dCode === 61)) ||
+            (d < 0 && !(last && dCode === 61))) throw new Error('Invalid response encoding');
+        var bits = a << 18 | b << 12 | (c < 0 ? 0 : c) << 6 | (d < 0 ? 0 : d);
+        if (at < bytes.length) bytes[at++] = bits >>> 16;
+        if (at < bytes.length) bytes[at++] = bits >>> 8 & 255;
+        if (at < bytes.length) bytes[at++] = bits & 255;
+      }
+      if (Date.now() - batchAt >= 8) { await responseTurn(); batchAt = Date.now(); }
+    }
+    await responseTurn();
+    batchAt = Date.now();
+    var pieces = [], produced = 0;
+    var utf8 = new root.fflate.DecodeUTF8(function (piece) { if (piece) pieces.push(piece); });
+    async function decode(chunk) {
+      // Gunzip can expand a small compressed chunk into hundreds of KiB. Keep
+      // UTF-8 conversion bounded as well, preserving split multibyte characters.
+      for (var offset = 0; offset < chunk.length; offset += 8192) {
+        utf8.push(chunk.subarray(offset, Math.min(offset + 8192, chunk.length)), false);
+        if (Date.now() - batchAt >= 8) { await responseTurn(); batchAt = Date.now(); }
+      }
+    }
+    if (coding === 'gzip') {
+      if (bytes.length < 18 || bytes[0] !== 31 || bytes[1] !== 139 || bytes[2] !== 8) throw new Error('Invalid gzip header');
+      var n = bytes.length;
+      var size = (bytes[n - 4] | bytes[n - 3] << 8 | bytes[n - 2] << 16 | bytes[n - 1] << 24) >>> 0;
+      if (!size || size > limit) throw new Error('Response too large');
+      var pending = [], finished = false;
+      var gzip = new root.fflate.Gunzip(function (chunk, final) {
+        produced += chunk.length;
+        // Check actual output too: an untrusted gzip trailer may understate it.
+        if (produced > limit) throw new Error('Response too large');
+        if (chunk.length) pending.push(chunk);
+        if (final) finished = true;
+      });
+      for (var compressedAt = 0; compressedAt < bytes.length; compressedAt += 512) {
+        var compressedEnd = Math.min(compressedAt + 512, bytes.length);
+        gzip.push(bytes.subarray(compressedAt, compressedEnd), compressedEnd === bytes.length);
+        if (Date.now() - batchAt >= 8) { await responseTurn(); batchAt = Date.now(); }
+        for (var part = 0; part < pending.length; part++) await decode(pending[part]);
+        pending.length = 0;
+      }
+      if (!finished || produced !== size) throw new Error('Incomplete response');
+    } else {
+      await decode(bytes);
+    }
+    await responseTurn();
+    utf8.push(new Uint8Array(0), true);
+    await responseTurn();
+    return pieces.join('');
+    } finally {
+      // Streaming callbacks close over this async frame. Release their large
+      // buffers on success and failure before the next snapshot is prepared.
+      response = null; encoded = null; bytes = null; pieces = null;
+      pending = null; gzip = null; utf8 = null;
+    }
+  }
   function text(value) { return value === undefined || value === null ? '' : String(value); }
   function parseAccountToken(input) {
     var value = text(input).trim();
@@ -160,7 +256,7 @@
     });
     return result;
   }
-  function normalizeDetail(data, role, now) {
+  function normalizeDetail(data, role, now, staminaOnly) {
     var detail = data && data.detail;
     var dungeon = detail && detail.dungeon;
     var current = dungeon && finiteValue(dungeon.curStamina);
@@ -170,6 +266,9 @@
     }
     var updatedAt = epoch(detail.currentTs) || now || Date.now();
     var recoveryAt = epoch(dungeon.maxTs);
+    var stamina = { current: current, max: max, updatedAt: updatedAt,
+      recoveryAt: current >= max ? null : recoveryAt, secondsPerPoint: null };
+    if (staminaOnly) return { stamina: stamina };
     var base = detail.base || {};
     var playerName = text(base.name || role.name || '管理员');
     var bindingName = text(role.name);
@@ -187,8 +286,7 @@
       characters.push({ id: id, name: text(character.name).slice(0, 60), url: url });
     });
     return {
-      stamina: { current: current, max: max, updatedAt: updatedAt,
-        recoveryAt: current >= max ? null : recoveryAt, secondsPerPoint: null },
+      stamina: stamina,
       profile: { name: playerName.slice(0, 60),
         level: finiteValue(base.level), server: text(base.serverName || role.server || '国服').replace(/^China$/, '国服').slice(0, 40) },
       characters: characters,
@@ -207,13 +305,28 @@
       platform: signed.platform, timestamp: signed.timestamp, dId: signed.dId, vName: signed.vName,
       'User-Agent': USER_AGENT, Accept: 'application/json' };
   }
-  function create(bridge) {
+  function create(bridge, settings) {
     var clockOffset = 0;
-    async function request(url, options, label, envelope) {
+    var compressed = !!(settings && settings.compressed);
+    var trace = settings && typeof settings.trace === 'function' ? settings.trace : function () {};
+    async function request(url, options, label, envelope, compactResponse) {
       var res;
+      var args = Object.assign({ url: url, method: 'GET', responseType: 'text',
+        redirect: 'manual', timeoutMs: 8000, headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' } }, options || {});
+      if (compactResponse) {
+        if (!root.fflate || typeof root.fflate.Gunzip !== 'function' || typeof root.fflate.DecodeUTF8 !== 'function' ||
+            (typeof root.requestAnimationFrame !== 'function' && typeof root.setTimeout !== 'function')) {
+          throw failure('RUNTIME', '数据解压组件未加载，请重新安装完整模块。');
+        }
+        // Explicit Accept-Encoding leaves compressed bytes intact in Android's HttpURLConnection.
+        // Decode only after the small base64 payload has crossed the rear screen HostVar bridge.
+        args.responseType = 'base64';
+        args.headers = Object.assign({}, args.headers, { 'Accept-Encoding': 'gzip' });
+      }
       try {
-        res = await bridge.net.request(Object.assign({ url: url, method: 'GET', responseType: 'text',
-          redirect: 'manual', timeoutMs: 8000, headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' } }, options || {}));
+        trace(compactResponse ? 'detail.request' : 'auth.request');
+        res = await bridge.net.request(args);
+        trace(compactResponse ? 'detail.reply' : 'auth.reply', res && typeof res.bodyBase64 === 'string' ? res.bodyBase64.length : res && typeof res.body === 'string' ? res.body.length : 0);
       } catch (error) {
         if (error && error.code === 'TIMEOUT') throw failure('TIMEOUT', label + '超时，结果未知，请稍后手动刷新。');
         throw failure('NETWORK', label + '未完成，请检查网络后重试。');
@@ -228,7 +341,18 @@
       var serverTime = Date.parse(Array.isArray(dateHeader) ? dateHeader[0] : dateHeader);
       if (Number.isFinite(serverTime)) clockOffset = serverTime - Date.now();
       var body;
-      try { body = JSON.parse(res.body); } catch (_) { throw failure('DATA', label + '返回格式异常，请稍后重试。'); }
+      try {
+        var source = compactResponse ? await responseText(res) : res.body;
+        res = null;
+        trace(compactResponse ? 'detail.decoded' : 'auth.decoded', typeof source === 'string' ? source.length : 0);
+        // Joining text and parsing JSON each receive their own host time budget.
+        if (compactResponse) await responseTurn();
+        body = JSON.parse(source);
+        source = null;
+        trace(compactResponse ? 'detail.parsed' : 'auth.parsed');
+        if (compactResponse) await responseTurn();
+      } catch (_) { throw failure('DATA', label + '返回格式异常，请稍后重试。'); }
+      finally { source = null; res = null; }
       var code = body && body[envelope || 'code'];
       if (code === undefined || code === null || Number(code) !== 0) {
         var authError = Number(code) === 10000 || Number(code) === 10002;
@@ -237,10 +361,10 @@
       if (!body.data || typeof body.data !== 'object') throw failure('DATA', label + '未返回有效数据。');
       return body.data;
     }
-    async function signedGet(auth, path, query, label) {
+    async function signedGet(auth, path, query, label, compactResponse) {
       var stamp = Math.floor((Date.now() + clockOffset) / 1000) - 1;
       return request(ORIGIN + path + (query ? '?' + query : ''),
-        { headers: signedHeaders(auth, path, query, stamp) }, label);
+        { headers: signedHeaders(auth, path, query, stamp) }, label, undefined, compactResponse);
     }
     async function ensureUserId(auth) {
       if (auth.userId) return auth;
@@ -288,10 +412,20 @@
       var auth = await refreshAuth(saved);
       var query = 'roleId=' + encodeURIComponent(role.roleId) + '&serverId=' + encodeURIComponent(role.serverId) +
         '&userId=' + encodeURIComponent(auth.userId);
-      var data = await signedGet(auth, '/web/v1/game/endfield/card/detail', query, '同步终末地体力');
-      var result = normalizeDetail(data, role, Date.now());
-      result.auth = auth;
-      return result;
+      var data = await signedGet(auth, '/web/v1/game/endfield/card/detail', query, '同步终末地体力', compressed);
+      try {
+        var result = normalizeDetail(data, role, Date.now(), !!(settings && settings.staminaOnly));
+        result.auth = auth;
+        return result;
+      } finally {
+        // Only scalar stamina values leave this path. Resolved host Promises may
+        // still own this private JSON object, so detach its large detail graph
+        // before clearing our local reference. Full settings sync is unchanged.
+        if (settings && settings.staminaOnly && data && typeof data === 'object') {
+          Object.keys(data).forEach(function (key) { delete data[key]; });
+        }
+        data = null;
+      }
     }
     return { connect: connect, fetchStamina: fetchStamina };
   }

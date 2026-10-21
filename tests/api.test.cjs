@@ -19,6 +19,20 @@ const detail = { detail: { currentTs: '1770000000', dungeon: { curStamina: '0', 
   base: { name: '测试管理员', level: 20, serverName: 'China' },
   chars: [{ charData: { id: 'char-test', name: '测试干员', illustrationUrl: 'https://example.com/portrait.png' } }] } };
 
+test('sync diagnostics emit fixed stage names and sizes without account or response contents', async () => {
+  const logs = [];
+  const api = A.create({ net: { request: async args => args.url.endsWith('/auth/refresh') ? ok({ token: 'secret-rotated-token' }) : ok(detail) } },
+    { trace: (...entry) => logs.push(entry) });
+  await api.fetchStamina(auth, role);
+  assert(logs.length > 0);
+  for (const [stage, size] of logs) {
+    assert.match(stage, /^(auth|detail)\.(request|reply|decoded|parsed)$/);
+    assert(size === undefined || (Number.isInteger(size) && size >= 0));
+  }
+  assert(!JSON.stringify(logs).includes('secret'));
+  assert(!JSON.stringify(logs).includes(role.name));
+});
+
 test('signature matches independent Node HMAC/MD5 including encoded GET query', () => {
   const requestPath = '/web/v1/game/endfield/card/detail';
   const query = 'roleId=a%2Bb&serverId=1&userId=skland-identity';
@@ -28,6 +42,20 @@ test('signature matches independent Node HMAC/MD5 including encoded GET query', 
   const hmac = crypto.createHmac('sha256', 'test-key').update(input).digest('hex');
   assert.equal(headers.sign, crypto.createHash('md5').update(hmac).digest('hex'));
   assert.equal(headers.cred, auth.cred);
+});
+
+test('stamina-only refresh skips profile, showcase, operator and portrait-candidate processing', async () => {
+  const response = structuredClone(detail);
+  for (const key of ['base', 'chars', 'achieve']) Object.defineProperty(response.detail, key, {
+    get() { throw new Error('unrelated detail must not be processed'); }
+  });
+  const normalized = A.normalizeDetail(response, role, 123, true);
+  assert.equal(normalized.stamina.current, 0);
+  assert.deepEqual(Object.keys(normalized), ['stamina']);
+  const api = A.create({ net: { request: async args => args.url.endsWith('/auth/refresh') ? ok({ token: 'new-key' }) : ok(detail) } }, { staminaOnly: true });
+  const result = await api.fetchStamina(auth, role);
+  assert.equal(result.stamina.current, 0);
+  assert.deepEqual(Object.keys(result).sort(), ['auth', 'stamina']);
 });
 
 test('account/info JSON and plain token are accepted, empty JSON and URLs are not', () => {

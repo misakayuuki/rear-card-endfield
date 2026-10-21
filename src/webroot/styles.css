@@ -3,3 +3,8 @@
 .portrait-scale-help{display:flex;align-items:baseline;gap:16px;justify-content:space-between}.portrait-scale-help .field-help{margin-top:0}.portrait-scale-help .text-button{white-space:nowrap}
 .login-desktop-hint{margin:0 0 14px;font-size:12px;line-height:1.8;color:var(--text)}.login-steps li{margin-bottom:12px}.login-url{display:block;max-width:100%;margin:7px 0;padding:9px 10px;border:1px solid var(--line);border-radius:5px;background:#11160f;color:var(--accent);font:12px/1.7 monospace;overflow-wrap:anywhere;word-break:break-word;white-space:normal;cursor:text;-webkit-user-select:all;user-select:all}
 .native-preview{position:absolute;inset:0;width:100%;height:100%;border:0;z-index:1}.device-preview>.preview-grid,.device-preview>.preview-safe{display:none}.device-preview>.camera-mask{z-index:2;pointer-events:none}
+/* Match the two separate, full-size lenses seen on the physical rear screen. */
+.device-preview>.camera-mask{top:4%;bottom:4%;left:2%;width:26.5%;border-radius:0;background:none;box-shadow:none;padding:0;gap:0;justify-content:space-between}
+.device-preview>.camera-mask>.lens{width:100%;height:auto;flex:0 0 auto;aspect-ratio:1;border-width:6px;box-shadow:0 0 0 2px #090b0c,0 0 0 3px #363a3f;background:radial-gradient(circle at 50% 50%,#d5d9ff 0 5%,#243251 7%,#0a0d1b 12%,#151720 18%,#0c0d13 35%,#16171d 62%,#090b10 68%)}
+.device-preview>.camera-mask>.lens-two{background:radial-gradient(ellipse at 50% 50%,#74819e 0 5%,#172039 8%,#060b16 16%,#151922 24%,#080a10 43%,#14171d 46%,#07090d 65%)}
+.device-preview>.camera-mask>span{display:none}

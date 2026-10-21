@@ -7,13 +7,15 @@
   var ctx = canvas.getContext('2d');
   var core = window.EndfieldCore;
   var nativeBridge = typeof bridge !== 'undefined' ? bridge : null;
-  var service = nativeBridge && window.EndfieldService ? window.EndfieldService.create(nativeBridge) : null;
+  var service = nativeBridge && window.EndfieldService ? window.EndfieldService.create(nativeBridge, { card: true }) : null;
   var W = Number(window.CANVAS_W) || 912;
   var H = Number(window.CANVAS_H) || 596;
   var stopped = false;
   var queued = false;
   var frameId = null;
   var timerId = null;
+  var refreshTimerId = null;
+  var refreshRevision = 0;
   var busy = false;
   var lastAttemptAt = 0;
   var loadRevision = 0;
@@ -43,7 +45,10 @@
     });
   }
 
-  function acceptSnapshot(value) {
+  function acceptSnapshot(value, expanded) {
+    // Service results are already validated and expanded; avoid serializing all
+    // images again just to accept the same data for drawing.
+    if (!expanded && window.EndfieldCache) value = window.EndfieldCache.unpack(value);
     if (stopped || !core.validSnapshot(value)) return false;
     state = value;
     updatePortrait();
@@ -239,7 +244,7 @@
     text('森空岛展示的蚀刻章', x, 181, 18, '#c4cec3', '', width - 110);
     if (!known) {
       text('请同步蚀刻章展示信息', x, 292, 26, '#f3f4e9', 'bold', width);
-      text('在模块设置页点按同步，读取森空岛展示栏', x, 340, 17, '#9aa69d', '', width);
+      text('在设置页点「同步全部资料」读取展示栏', x, 340, 17, '#9aa69d', '', width);
       text('只显示你选中展示的蚀刻章', x, 374, 17, '#9aa69d', '', width);
       return;
     }
@@ -281,7 +286,7 @@
     var operators = Array.isArray(dashboard.operators) ? dashboard.operators : [];
     if (!operators.length) {
       text('暂无干员养成数据', x, 244, 28, '#f3f4e9', 'bold', width);
-      text('同步后显示干员等级、武器与技能', x, 295, 18, '#9aa69d', '', width);
+      text('在设置页同步全部资料后显示养成信息', x, 295, 18, '#9aa69d', '', width);
       text('可在森空岛开启干员资料展示', x, 332, 18, '#9aa69d', '', width);
       if (dashboard.operatorCount !== null && dashboard.operatorCount !== undefined) text('已拥有 ' + dashboard.operatorCount + ' 位干员', x, 390, 23, cfg.accent, '', width);
       return;
@@ -345,12 +350,15 @@
     ctx.fillRect(0, 0, 912, 596);
     actions = [];
     // The camera side contains only decoration, never essential values or actions.
+    // The two physical lenses end around x=260 on the default 912px layout.
+    // Keep the text's safe inset, but bring this decorative boundary closer to them.
+    var cameraBoundary = Math.max(0, cfg.safeLeft - 44);
     ctx.fillStyle = '#14191a';
-    ctx.fillRect(0, 0, cfg.safeLeft, 596);
+    ctx.fillRect(0, 0, cameraBoundary, 596);
     for (var stripe = -596; stripe < cfg.safeLeft + 596; stripe += 64) {
       line(stripe, 0, stripe - 596, 596, '#1c2423', 1);
     }
-    line(cfg.safeLeft, 32, cfg.safeLeft, 564, '#303833', 1);
+    if (cameraBoundary > 0) line(cameraBoundary, 40, cameraBoundary, 556, '#303833', 1);
     // Let the chosen artwork fill the safe side; a left shade keeps values legible.
     ctx.globalAlpha = page === 0 ? 1 : 0.22;
     drawPortrait({ x: x + width * 0.12, y: 40, w: width * 0.88 + 36, h: 478 }, cfg);
@@ -366,7 +374,7 @@
     if (page === 0) drawPlayerTitle(x, width - 10, pale);
     else text(pageNames[page], x, 102, 32, pale, 'bold', width - 10);
     text('REAR TERMINAL  /  0' + (page + 1) + '  /  左右滑动切换', x, 132, 12, '#9aa69d', '', width);
-    var status = busy ? '同步中' : (failed ? '同步失败' : (stale ? '缓存数据' : (hasData ? '森空岛' : '未连接')));
+    var status = busy ? '同步中' : (failed ? (String(state.error).indexOf('超时') >= 0 ? '同步超时' : '同步失败') : (stale ? '缓存数据' : (hasData ? '森空岛' : '未连接')));
     var statusWidth = 106;
     ctx.fillStyle = failed ? '#432b24' : '#242c24';
     ctx.fillRect(right - statusWidth, 43, statusWidth, 30);
@@ -376,7 +384,8 @@
     if (page === 0) drawOverview(cfg, stamina, x, right, width);
     else if (page === 1) drawGlory(cfg, x, right, width);
     else drawOperators(cfg, x, right, width);
-    if (page !== 2) text(state.syncedAt ? '同步于 ' + clockTime(state.syncedAt) : '尚未同步', x, 502, 14, '#9aa69d', '', width);
+    var syncedAt = page === 0 || state.detailsSyncedAt === undefined ? state.syncedAt : state.detailsSyncedAt;
+    if (state.error || page !== 2) text(state.error || (syncedAt ? '同步于 ' + clockTime(syncedAt) : page ? '请在设置页同步资料' : '尚未同步'), x, 502, 14, state.error ? '#ffb19a' : '#9aa69d', '', width);
     var navWidth = (width - 166) / 3;
     var navNames = ['体力', '光荣', '养成'];
     for (var p = 0; p < 3; p++) {
@@ -387,7 +396,7 @@
     refreshHit = { x: right - 150, y: 518, w: 150, h: 54 };
     ctx.fillStyle = '#263025';
     ctx.fillRect(refreshHit.x, refreshHit.y, refreshHit.w, refreshHit.h);
-    text(busy ? '正在同步' : '点按同步 ↗', refreshHit.x + 18, refreshHit.y + 27, 19, accent, '', refreshHit.w - 30);
+    text(busy ? '同步中' : '刷新理智', refreshHit.x + 18, refreshHit.y + 27, 19, accent, '', refreshHit.w - 30);
     ctx.restore();
   }
 
@@ -401,17 +410,30 @@
     if (force && now - lastAttemptAt < 5000) return;
     lastAttemptAt = now;
     busy = true;
+    var revision = ++refreshRevision;
+    function complete(error) {
+      if (stopped || revision !== refreshRevision) return;
+      if (refreshTimerId !== null) { window.clearTimeout(refreshTimerId); refreshTimerId = null; }
+      if (error) state.error = error.code === 'TIMEOUT' ? '同步超时，保留上次数据，点按重试' :
+        (error.code === 'AUTH' ? '登录已失效，请在主屏设置中重新连接' : '同步未完成，保留上次数据，点按重试');
+      busy = false;
+      requestDraw();
+    }
+    // The service has its own deadline and invalidates expired writes. This UI
+    // watchdog also bounds unexpected host/service failures without losing data.
+    refreshTimerId = window.setTimeout(function () {
+      complete({ code: 'TIMEOUT' });
+      refreshRevision++;
+    }, 65000);
     requestDraw();
     try {
       var next = await service.refresh();
-      if (!stopped) acceptSnapshot(next);
+      if (!stopped && revision === refreshRevision) acceptSnapshot(next, true);
     } catch (error) {
-      if (!stopped) {
-        // Error content may include secrets in an unforeseen upstream failure.
-        state.error = '同步失败，请在主屏设置中检查连接';
-      }
+      // Only classified local messages reach the card; upstream text may contain credentials.
+      complete(error || {});
     } finally {
-      if (!stopped) { busy = false; requestDraw(); }
+      complete();
     }
   }
 
@@ -421,7 +443,7 @@
     try {
       var snapshot = await service.getSnapshot();
       if (stopped || revision !== loadRevision) return;
-      if (snapshot) acceptSnapshot(snapshot);
+      if (snapshot) acceptSnapshot(snapshot, true);
       var cfg = await service.getSettings();
       if (stopped || revision !== loadRevision) return;
       state.settings = cfg;
@@ -492,7 +514,9 @@
 
   window.__endfieldCardStop = function () {
     stopped = true;
+    refreshRevision++;
     if (timerId !== null) window.clearInterval(timerId);
+    if (refreshTimerId !== null) window.clearTimeout(refreshTimerId);
     if (frameId !== null && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(frameId);
     if (portraitImage) { portraitImage.onload = null; portraitImage.onerror = null; }
     Object.keys(medalImages).forEach(function (source) {

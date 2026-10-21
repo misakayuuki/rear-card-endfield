@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const root = path.join(__dirname, '..');
 const coreSource = fs.readFileSync(path.join(root, 'src/shared/core.js'), 'utf8');
+const cacheSource = fs.readFileSync(path.join(root, 'src/shared/cache.js'), 'utf8');
 const cardSource = fs.readFileSync(path.join(root, 'src/card/main.js'), 'utf8');
 
 function snapshot() {
@@ -26,6 +27,9 @@ function runtime(cached, serviceOverrides) {
   const imageBoxes = [];
   const imageObjects = [];
   const refreshCallbacks = [];
+  const timeouts = new Map();
+  let now = Date.now(), nextTimeout = 0;
+  class RuntimeDate extends Date { static now() { return now; } }
   const context = new Proxy({
     measureText: t => ({ width: String(t).length * 12 }),
     drawImage(image, x, y, w, h) { counts.images++; imageBoxes.push({ x, y, w, h, source: image.source }); },
@@ -44,7 +48,7 @@ function runtime(cached, serviceOverrides) {
     refresh: async () => { counts.refreshes++; return cached; }
   }, serviceOverrides);
   const sandbox = {
-    document: { getElementById: () => canvas }, Date, Math, Number, Promise,
+    document: { getElementById: () => canvas }, Date: RuntimeDate, Math, Number, Promise,
     Image: class {
       constructor() { imageObjects.push(this); }
       set src(value) { counts.sources++; this.source = value; this.width = 200; this.height = 400; if (this.onload) this.onload(); }
@@ -52,16 +56,20 @@ function runtime(cached, serviceOverrides) {
     bridge: { card: { readSnapshot: () => cached, onRefresh(fn) { refreshCallbacks.push(fn); } }, config: { onChange() {} } },
     EndfieldService: { create: () => service },
     requestAnimationFrame: f => (frames.push(f), frames.length), cancelAnimationFrame() {},
-    setInterval: () => 1, clearInterval: () => { counts.timerClears++; }
+    setInterval: () => 1, clearInterval: () => { counts.timerClears++; },
+    setTimeout(fn, delay) { const id = ++nextTimeout; timeouts.set(id,{fn,at:now+delay}); return id; },
+    clearTimeout(id) { timeouts.delete(id); }
   };
   sandbox.window = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(coreSource, sandbox);
+  vm.runInContext(cacheSource, sandbox);
   function execute() { vm.runInContext(cardSource, sandbox); }
   function emit(type, props) { for (const fn of listeners.get(type) || []) fn(Object.assign({ isPrimary: true }, props)); }
   function frame() { const fn = frames.shift(); if (fn) { labels.length = 0; textPositions.length = 0; fn(); } }
+  function tick(milliseconds) { now += milliseconds; for (const [id,task] of timeouts) if(task.at<=now){timeouts.delete(id);task.fn();} }
   execute();
-  return { counts, frames, labels, textPositions, imageBoxes, imageObjects, refreshCallbacks, listeners, sandbox, execute, emit, frame };
+  return { counts, frames, labels, textPositions, imageBoxes, imageObjects, refreshCallbacks, listeners, sandbox, execute, emit, frame, tick, timeouts };
 }
 
 function tap(r, x, y, pointerId = 1) {
@@ -86,6 +94,22 @@ test('cached data and portrait are prepared synchronously; drawing waits for RAF
   assert.equal(r.counts.images, 1);
   assert(r.labels.includes('80'));
   assert.equal(r.frames.length, 0, 'static frame must not schedule a permanent RAF loop');
+});
+
+test('packed native snapshot restores the exact high-resolution art before the first asynchronous frame', () => {
+  const cached=snapshot();
+  cached.portrait.dataUrl='data:image/webp;base64,'+'AB+/'.repeat(112000);
+  cached.dashboard={glory:{displayKnown:true,displayCount:1,medals:[{id:'m',name:'展示蚀刻章',iconDataUrl:'data:image/png;base64,AA=='}]}};
+  const codec={};vm.createContext(codec);vm.runInContext(cacheSource,codec);
+  const packed=codec.EndfieldCache.pack(cached);
+  assert.equal(packed.endfieldPackedSnapshot,1);
+  const r=runtime(JSON.parse(JSON.stringify(packed)));
+  assert.equal(r.counts.sources,2,'portrait and medal restore before any promise callback');
+  assert.equal(r.imageObjects[0].source,cached.portrait.dataUrl);
+  r.frame();
+  assert(r.labels.includes('80'));
+  assert(r.labels.includes('管理员#1234'));
+  assert.equal(r.counts.images,1);
 });
 
 test('drag and cancelled gestures do not cause refresh; a stationary tap does', () => {
@@ -117,6 +141,44 @@ test('hot reload disposes timer and old pointer handlers', () => {
   assert.equal(r.counts.fills, 0, 'an already queued callback from the old instance is inert');
   r.frame();
   assert(r.counts.fills > 0);
+});
+
+test('a lost sync result leaves the last data visible, releases the button and ignores late results', async () => {
+  const old = snapshot(), fresh = snapshot(), late = snapshot();
+  fresh.stamina.current=123; late.stamina.current=999;
+  let calls=0, release;
+  const r=runtime(old,{refresh:()=>{
+    calls++;
+    return calls===1 ? new Promise(resolve=>{release=resolve;}) : Promise.resolve(fresh);
+  }});
+  r.frame(); tap(r,800,550);
+  assert(r.labels.includes('同步中'));
+  r.tick(65000); r.frame();
+  assert(r.labels.includes('同步超时'));
+  assert(r.labels.includes('80'));
+  assert(r.labels.includes('刷新理智'));
+  tap(r,800,550);
+  await new Promise(resolve=>setImmediate(resolve));r.frame();
+  assert.equal(calls,2);
+  assert(r.labels.includes('123'));
+  assert(!r.labels.includes('同步超时'));
+  release(late);
+  await new Promise(resolve=>setImmediate(resolve));r.frame();
+  assert(!r.labels.includes('999'));
+  assert.equal(r.timeouts.size,0);
+});
+
+test('sync error messages distinguish timeouts from expired login and never echo secrets', async () => {
+  for(const [code,label] of [['TIMEOUT','同步超时'],['AUTH','登录已失效，请在主屏设置中重新连接'],['NETWORK','同步未完成，保留上次数据，点按重试']]){
+    const r=runtime(snapshot(),{refresh:async()=>{const error=new Error('private-credential');error.code=code;throw error;}});
+    r.frame();tap(r,800,550);
+    await new Promise(resolve=>setImmediate(resolve));r.frame();
+    assert(r.labels.includes(label));
+    assert(r.labels.includes('80'));
+    assert(r.labels.includes('刷新理智'));
+    assert(!r.labels.some(text=>text.includes('private-credential')));
+    assert.equal(r.timeouts.size,0);
+  }
 });
 
 test('unknown or malformed snapshots show an empty state', () => {
@@ -152,6 +214,18 @@ test('horizontal swipes cycle three pages and never trigger a network refresh', 
   assert.equal(r.counts.refreshes, 0);
   assert.equal(r.counts.sources, 1, 'page changes reuse the already decoded portrait');
   assert.equal(r.frames.length, 0, 'navigation draws only when needed');
+});
+
+test('showcase freshness keeps its own manual-sync time after a stamina refresh', () => {
+  for (const previous of [new Date(2026, 9, 21, 4, 15).getTime(), 0, undefined]) {
+    const cached = snapshot();
+    cached.syncedAt = new Date(2026, 9, 21, 5, 10).getTime();
+    if (previous !== undefined) cached.detailsSyncedAt = previous;
+    const r = runtime(cached); r.frame();
+    assert(r.labels.includes('同步于 05:10'));
+    swipe(r, [800, 320], [500, 320]);
+    assert(r.labels.includes(previous === 0 ? '请在设置页同步资料' : previous === undefined ? '同步于 05:10' : '同步于 04:15'));
+  }
 });
 
 test('vertical, diagonal, cancelled and multi-pointer gestures do not navigate', () => {

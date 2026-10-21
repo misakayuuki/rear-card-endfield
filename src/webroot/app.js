@@ -34,6 +34,13 @@
     $('feedback').hidden = false;
     if (!isError) feedbackTimer = setTimeout(function () { $('feedback').hidden = true; }, 6000);
   }
+  function currentPortrait() {
+    return pendingPortrait !== undefined ? pendingPortrait : snapshot && snapshot.portrait && snapshot.portrait.dataUrl;
+  }
+  function updateImageControls() {
+    $('save-button').disabled = busy || imageProcessing;
+    $('reduce-image').disabled = busy || imageProcessing || !currentPortrait();
+  }
   async function action(fn) {
     if (busy) return;
     busy = true;
@@ -44,7 +51,7 @@
     finally {
       busy = false;
       document.querySelectorAll('button,input,select').forEach(function (control) { control.disabled = disabledBefore.has(control); });
-      $('save-button').disabled = imageProcessing;
+      updateImageControls();
       $('choose-character').disabled = !characters.length;
       $('character-select').disabled = !characters.length;
     }
@@ -94,7 +101,7 @@
     $('portrait-scale-value').textContent = Math.round(draft.portraitScale * 100) + '%';
     $('safe-left-value').textContent = draft.safeLeft;
     $('preview-safe').style.left = Math.max(3.8, draft.safeLeft / 912 * 100) + '%';
-    var dataUrl = pendingPortrait !== undefined ? pendingPortrait : snapshot && snapshot.portrait && snapshot.portrait.dataUrl;
+    var dataUrl = currentPortrait();
     var img = $('portrait-preview');
     if (dataUrl) {
       if (img.getAttribute('src') !== dataUrl) img.src = dataUrl;
@@ -106,6 +113,7 @@
     } else { img.hidden = true; img.removeAttribute('src'); }
     $('art-placeholder').hidden = !!dataUrl;
     $('remove-image').hidden = !dataUrl;
+    updateImageControls();
     $('upload-label').textContent = dataUrl ? '更换本地角色立绘' : '选择本地角色立绘';
     $('preview-character').textContent = draft.characterName || '你的干员';
     $('preview-label').textContent = dirty ? '有未保存的调整' : previewMode ? '示例数据' : snapshot && snapshot.stamina ? '已应用' : '等待配置';
@@ -122,7 +130,8 @@
     var profile = snapshot && snapshot.profile;
     $('preview-profile').textContent = profile && profile.name ? profile.name + (profile.level ? ' / Lv.' + profile.level : '') : '等待连接森空岛';
     $('preview-sync').textContent = snapshot && snapshot.syncedAt ? shortTime(snapshot.syncedAt) + ' 更新' : '尚未同步';
-    $('sync-status').textContent = previewMode ? '浏览器中的示例数据' : snapshot && snapshot.error ? snapshot.error : snapshot && snapshot.syncedAt ? shortTime(snapshot.syncedAt) + ' 已同步 · 下次显示时读取快照' : '尚未连接账号';
+    var detailsTime = snapshot && (snapshot.detailsSyncedAt === undefined ? snapshot.syncedAt : snapshot.detailsSyncedAt);
+    $('sync-status').textContent = previewMode ? '浏览器中的示例数据' : snapshot && snapshot.error ? snapshot.error : snapshot && snapshot.syncedAt ? '理智 ' + shortTime(snapshot.syncedAt) + ' · 资料 ' + (detailsTime ? shortTime(detailsTime) : '未同步') : '尚未连接账号';
     $('save-hint').textContent = dirty ? '有未保存的调整' : previewMode ? '预览修改仅保留在当前页面' : '调整后保存，即可应用到背屏';
     if (window.EndfieldSettingsPreview && typeof window.EndfieldSettingsPreview.update === 'function') {
       window.EndfieldSettingsPreview.update(Object.assign({ schemaVersion: 1, stamina: null, profile: null, dashboard: null, syncedAt: 0, error: null }, snapshot || {}, { settings: draft, portrait: dataUrl ? { dataUrl: dataUrl } : null }));
@@ -153,13 +162,13 @@
     select.textContent = '';
     if (!characters.length) {
       var empty = document.createElement('option');
-      empty.textContent = snapshot && snapshot.stamina && !previewMode ? '暂无可用的角色立绘' : '连接账号并同步后显示';
+      empty.textContent = snapshot && snapshot.stamina && !previewMode ? '暂无可用的角色立绘' : '同步全部资料后显示';
       select.appendChild(empty);
     } else {
       characters.forEach(function (character) { var option = document.createElement('option'); option.value = character.id; option.textContent = character.name; select.appendChild(option); });
       if (characters.some(function (character) { return character.id === previous; })) select.value = previous;
     }
-    $('owned-help').textContent = characters.length ? '森空岛返回了 ' + characters.length + ' 位展示干员；仅下载你选中的立绘。' : '可选范围以森空岛返回的干员为准，也可以上传本地图片。';
+    $('owned-help').textContent = characters.length ? '森空岛返回了 ' + characters.length + ' 位展示干员；立绘仅在你选择并保存时更换。' : '可选范围以森空岛返回的干员为准，也可以上传本地图片；立绘不会随刷新更换。';
     select.disabled = busy || !characters.length;
     $('choose-character').disabled = busy || !characters.length;
   }
@@ -204,8 +213,12 @@
     action(async function () { await service.disconnect(); roles = []; snapshot = await service.getSnapshot(); await loadCharacters(); $('login-details').open = true; renderAccount(); renderPreview(); feedback('已移除本机模块保存的登录凭据。'); });
   });
   $('refresh-button').addEventListener('click', function () {
-    if (previewMode) { feedback('这里显示示例数据；安装模块并连接账号后可刷新真实资料。'); return; }
-    action(async function () { try { snapshot = await service.refresh(); feedback(snapshot && snapshot.stamina ? '数据已更新。' : '请先连接森空岛账号。'); } finally { snapshot = await service.getSnapshot(); await loadCharacters(); renderAccount(); renderPreview(); } });
+    if (previewMode) { feedback('这里显示示例数据；安装模块并连接账号后可手动同步全部资料。'); return; }
+    action(async function () {
+      $('refresh-button').textContent = '同步中…';
+      try { snapshot = await service.refresh(); feedback(snapshot && snapshot.stamina ? '全部资料已同步，立绘保持你的选择。' : '请先连接森空岛账号。'); }
+      finally { $('refresh-button').textContent = '同步全部资料'; snapshot = await service.getSnapshot(); await loadCharacters(); renderAccount(); renderPreview(); }
+    });
   });
   $('appearance-form').addEventListener('input', markDirty);
   $('appearance-form').addEventListener('change', function (event) { if (event.target !== $('portrait-file')) markDirty(); });
@@ -217,15 +230,15 @@
     markDirty();
   });
   document.querySelectorAll('[data-color]').forEach(function (button) { button.addEventListener('click', function () { $('accent-color').value = button.getAttribute('data-color'); markDirty(); }); });
-  $('remove-image').addEventListener('click', function () { imageJob += 1; imageProcessing = false; $('save-button').disabled = busy; pendingPortrait = ''; $('portrait-file').value = ''; $('image-status').textContent = '保存后移除当前立绘'; markDirty(); });
+  $('remove-image').addEventListener('click', function () { if (busy) return; imageJob += 1; imageProcessing = false; pendingPortrait = ''; $('portrait-file').value = ''; $('image-status').textContent = '保存后移除当前立绘'; markDirty(); });
 
   $('portrait-file').addEventListener('change', async function () {
     var file = $('portrait-file').files && $('portrait-file').files[0];
-    if (!file) return;
+    if (!file || busy) return;
     var job = ++imageJob;
     imageProcessing = true;
     $('image-status').textContent = '正在为背屏处理图片…';
-    $('save-button').disabled = true;
+    updateImageControls();
     try {
       var prepared = await window.EndfieldImages.prepare(file);
       if (job !== imageJob) return;
@@ -233,29 +246,45 @@
       $('image-status').textContent = prepared.width + ' × ' + prepared.height + ' · ' + Math.round(prepared.bytes / 1024) + ' KB · 等待保存';
       markDirty();
     } catch (error) { if (job === imageJob) { $('image-status').textContent = '处理失败，当前立绘未改变'; feedback(error.message, true); } }
-    finally { if (job === imageJob) { imageProcessing = false; if (!busy) $('save-button').disabled = false; } }
+    finally { if (job === imageJob) { imageProcessing = false; updateImageControls(); } }
+  });
+  $('reduce-image').addEventListener('click', async function () {
+    if (busy || imageProcessing) return;
+    var dataUrl = currentPortrait();
+    if (!dataUrl) { feedback('请先选择一张立绘。'); return; }
+    var job = ++imageJob;
+    imageProcessing = true;
+    updateImageControls();
+    $('image-status').textContent = '正在本地降低立绘占用…';
+    try {
+      var prepared = await window.EndfieldImages.prepare(window.EndfieldImages.fromDataUrl(dataUrl), { maxDimension: 1280, maxChars: 320000 });
+      if (job !== imageJob) return;
+      pendingPortrait = prepared.dataUrl;
+      $('image-status').textContent = prepared.width + ' × ' + prepared.height + ' · ' + Math.round(prepared.bytes / 1024) + ' KB · 降低占用后等待保存';
+      markDirty();
+      feedback('立绘已在本地缩小，请检查预览后点击保存。');
+    } catch (error) { if (job === imageJob) { $('image-status').textContent = '处理失败，当前立绘未改变'; feedback(error.message, true); } }
+    finally { if (job === imageJob) { imageProcessing = false; updateImageControls(); } }
   });
   $('choose-character').addEventListener('click', function () {
     action(async function () {
       var character = characters.find(function (item) { return item.id === $('character-select').value; });
       if (!character) throw new Error('请选择一位已拥有的干员。');
-      imageJob += 1;
-      imageProcessing = false;
+      var job = ++imageJob;
+      imageProcessing = true;
       $('image-status').textContent = '正在下载并处理所选立绘…';
-      var dataUrl;
-      try { dataUrl = await service.downloadPortrait(character.id); }
-      catch (error) { $('image-status').textContent = '下载失败，当前立绘未改变'; throw error; }
-      var match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
-      if (!match) throw new Error('立绘图片格式不支持，请使用本地上传。');
-      var binary = atob(match[2]);
-      var bytes = new Uint8Array(binary.length);
-      for (var index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-      var prepared = await window.EndfieldImages.prepare(new Blob([bytes], { type: match[1] }));
-      pendingPortrait = prepared.dataUrl;
-      $('character-name').value = character.name.slice(0, 24);
-      $('image-status').textContent = character.name + ' · ' + prepared.width + ' × ' + prepared.height + ' · ' + Math.round(prepared.bytes / 1024) + ' KB · 等待保存';
-      markDirty();
-      feedback('立绘已载入，可调整位置后保存。');
+      try {
+        var dataUrl = await service.downloadPortrait(character.id);
+        if (job !== imageJob) return;
+        var prepared = await window.EndfieldImages.prepare(window.EndfieldImages.fromDataUrl(dataUrl));
+        if (job !== imageJob) return;
+        pendingPortrait = prepared.dataUrl;
+        $('character-name').value = character.name.slice(0, 24);
+        $('image-status').textContent = character.name + ' · ' + prepared.width + ' × ' + prepared.height + ' · ' + Math.round(prepared.bytes / 1024) + ' KB · 等待保存';
+        markDirty();
+        feedback('立绘已载入，可调整位置后保存。');
+      } catch (error) { if (job === imageJob) $('image-status').textContent = '处理失败，当前立绘未改变'; throw error; }
+      finally { if (job === imageJob) imageProcessing = false; }
     });
   });
   $('appearance-form').addEventListener('submit', function (event) {
